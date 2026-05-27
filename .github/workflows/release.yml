@@ -1,0 +1,128 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
+  BINARY_NAME: proxlet
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            archive_ext: tar.gz
+            asset_suffix: ""
+            packages: musl-tools
+          - target: x86_64-pc-windows-gnu
+            archive_ext: zip
+            asset_suffix: .exe
+            packages: gcc-mingw-w64-x86-64 zip
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.packages }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Restore cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --locked --release --target ${{ matrix.target }}
+
+      - name: Package release asset
+        env:
+          TARGET: ${{ matrix.target }}
+          ARCHIVE_EXT: ${{ matrix.archive_ext }}
+          ASSET_SUFFIX: ${{ matrix.asset_suffix }}
+        run: |
+          TAG_NAME="${GITHUB_REF_NAME}"
+          ASSET_BASENAME="${BINARY_NAME}-${TAG_NAME}-${TARGET}"
+          mkdir -p dist
+          cp "target/${TARGET}/release/${BINARY_NAME}${ASSET_SUFFIX}" "dist/${BINARY_NAME}${ASSET_SUFFIX}"
+          cp README.md README.zh-CN.md LICENSE create_cert_key.sh dist/
+
+          if [ "${ARCHIVE_EXT}" = "tar.gz" ]; then
+            tar -C dist -czf "${ASSET_BASENAME}.tar.gz" "${BINARY_NAME}${ASSET_SUFFIX}" README.md README.zh-CN.md LICENSE create_cert_key.sh
+          else
+            (
+              cd dist
+              zip -9 "../${ASSET_BASENAME}.zip" "${BINARY_NAME}${ASSET_SUFFIX}" README.md README.zh-CN.md LICENSE create_cert_key.sh
+            )
+          fi
+
+      - name: Upload packaged asset
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            *.tar.gz
+            *.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Generate changelog from commits
+        uses: orhun/git-cliff-action@v4
+        with:
+          args: --current --strip header
+        env:
+          OUTPUT: generated-changelog.md
+          GITHUB_REPO: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Render release notes
+        run: |
+          if [ ! -s generated-changelog.md ]; then
+            echo "_No conventional commits found for this release._" > generated-changelog.md
+          fi
+
+          perl -0pe '
+            BEGIN {
+              local $/;
+              open my $fh, "<", "generated-changelog.md" or die $!;
+              our $changelog = <$fh>;
+            }
+            s/\{\{ version \}\}/$ENV{GITHUB_REF_NAME}/g;
+            our $changelog;
+            s/\{\{ changelog \}\}/$changelog/ge;
+          ' .github/RELEASE_TEMPLATE.md > release-notes.md
+
+      - name: Download packaged assets
+        uses: actions/download-artifact@v6
+        with:
+          path: release-assets
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          body_path: release-notes.md
+          files: release-assets/**/*.*
