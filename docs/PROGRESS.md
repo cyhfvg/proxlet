@@ -1,6 +1,6 @@
 # proxlet Implementation Progress
 
-Last updated: 2026-05-27
+Last updated: 2026-06-03
 
 ## Implemented
 
@@ -36,6 +36,9 @@ Last updated: 2026-05-27
   binaries do not depend on OpenSSL or a system `libssl` shared library.
 - Added unit and asynchronous relay-path tests for command parsing, HTTP
   forwarding, SOCKS5 traffic, HTTP rewriting, and upstream URL parsing.
+- Added end-to-end integration tests for the TLS listener using generated test
+  certificates, plus live upstream HTTP, SOCKS5h, and SSH proxy fixtures with
+  authentication failure coverage.
 
 ## Operation Notes
 

@@ -1,12 +1,9 @@
 # proxlet TODO
 
-Last updated: 2026-05-27
+Last updated: 2026-06-03
 
 ## Next Work
 
-- Add end-to-end TLS listener tests using generated test certificates.
-- Add integration tests against live upstream HTTP, SOCKS5h, and SSH proxy
-  fixtures, including authentication failure.
 - Add graceful shutdown and connection-count/idle-timeout controls for
   long-running service deployments.
 - Add IPv4/IPv6 and CIDR allowlist integration coverage.
