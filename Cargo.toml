@@ -1,6 +1,6 @@
 [package]
 name = "proxlet"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "A portable HTTP, HTTPS and SOCKS5 proxy server with proxy chaining"
 license = "BSD-3-Clause"
@@ -14,8 +14,19 @@ libc = "0.2"
 percent-encoding = "2.3"
 russh = { version = "0.61", default-features = false, features = ["ring"] }
 rustls-pemfile = "2.2"
-tokio = { version = "1.48", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tokio = { version = "1.48", features = [
+    "io-util",
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "signal",
+    "sync",
+    "time",
+] }
+tokio-rustls = { version = "0.26", default-features = false, features = [
+    "ring",
+    "tls12",
+] }
 url = "2.5"
 webpki-roots = "1.0"
 
@@ -24,6 +35,8 @@ rand_core = "0.10"
 tempfile = "3.23"
 
 [profile.release]
+opt-level = 3
+lto = "thin"
 codegen-units = 1
-lto = true
-strip = true
+panic = "abort"
+strip = "symbols"
