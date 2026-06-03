@@ -8,7 +8,7 @@ use anyhow::{Context as _, Result, bail};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use proxlet::{Cli, ProxyType};
-use russh::keys::{Algorithm, PrivateKey};
+use russh::keys::{Algorithm, PrivateKey, PublicKey, ssh_key};
 use russh::server::{Auth, Handler, Msg, Server, Session};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -120,7 +120,7 @@ async fn socks5h_upstream_authentication_failure_returns_bad_gateway() -> Result
 #[tokio::test]
 async fn chains_through_live_ssh_upstream_proxy() -> Result<()> {
     let origin = start_origin("SSH").await?;
-    let upstream = start_ssh_upstream().await?;
+    let upstream = start_ssh_upstream(None).await?;
     let proxlet = start_proxlet(
         ProxyType::Http,
         Some(upstream_url("ssh", upstream.addr, USER, PASSWORD)?),
@@ -137,10 +137,57 @@ async fn chains_through_live_ssh_upstream_proxy() -> Result<()> {
 
 #[tokio::test]
 async fn ssh_upstream_authentication_failure_returns_bad_gateway() -> Result<()> {
-    let upstream = start_ssh_upstream().await?;
+    let upstream = start_ssh_upstream(None).await?;
     let proxlet = start_proxlet(
         ProxyType::Http,
         Some(upstream_url("ssh", upstream.addr, USER, "wrong-password")?),
+        None,
+    )
+    .await?;
+
+    let response = proxy_get_plain(proxlet.addr, "localhost", 1).await?;
+
+    assert!(response.starts_with(b"HTTP/1.1 502 Bad Gateway\r\n"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn chains_through_live_ssh_upstream_with_private_key_authentication() -> Result<()> {
+    let keys = tempfile::tempdir()?;
+    let (key_path, public_key) = write_test_private_key(keys.path().join("id_ed25519"), 1)?;
+    let origin = start_origin("SSH-KEY").await?;
+    let upstream = start_ssh_upstream(Some(public_key)).await?;
+    let proxlet = start_proxlet(
+        ProxyType::Http,
+        Some(ssh_private_key_upstream_url(
+            upstream.addr,
+            USER,
+            &key_path,
+        )?),
+        None,
+    )
+    .await?;
+
+    let response = proxy_get_plain(proxlet.addr, "localhost", origin.addr.port()).await?;
+
+    assert_response_body(&response, "SSH-KEY");
+    origin.task.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn ssh_upstream_private_key_authentication_failure_returns_bad_gateway() -> Result<()> {
+    let keys = tempfile::tempdir()?;
+    let (_, public_key) = write_test_private_key(keys.path().join("accepted_ed25519"), 2)?;
+    let (wrong_key_path, _) = write_test_private_key(keys.path().join("wrong_ed25519"), 3)?;
+    let upstream = start_ssh_upstream(Some(public_key)).await?;
+    let proxlet = start_proxlet(
+        ProxyType::Http,
+        Some(ssh_private_key_upstream_url(
+            upstream.addr,
+            USER,
+            &wrong_key_path,
+        )?),
         None,
     )
     .await?;
@@ -334,7 +381,7 @@ impl Drop for SshFixture {
     }
 }
 
-async fn start_ssh_upstream() -> Result<SshFixture> {
+async fn start_ssh_upstream(authorized_key: Option<PublicKey>) -> Result<SshFixture> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
     let task = tokio::spawn(async move {
@@ -347,7 +394,7 @@ async fn start_ssh_upstream() -> Result<SshFixture> {
             ],
             ..Default::default()
         });
-        let mut server = SshProxyServer;
+        let mut server = SshProxyServer { authorized_key };
         server
             .run_on_socket(config, &listener)
             .await
@@ -360,7 +407,11 @@ struct DeterministicRng(u64);
 
 impl DeterministicRng {
     fn new() -> Self {
-        Self(0x9e37_79b9_7f4a_7c15)
+        Self::with_seed(0)
+    }
+
+    fn with_seed(seed: u64) -> Self {
+        Self(0x9e37_79b9_7f4a_7c15 ^ seed)
     }
 }
 
@@ -390,7 +441,9 @@ impl rand_core::TryRng for DeterministicRng {
 impl rand_core::TryCryptoRng for DeterministicRng {}
 
 #[derive(Clone)]
-struct SshProxyServer;
+struct SshProxyServer {
+    authorized_key: Option<PublicKey>,
+}
 
 impl Server for SshProxyServer {
     type Handler = Self;
@@ -405,6 +458,23 @@ impl Handler for SshProxyServer {
 
     async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
         if user == USER && password == PASSWORD {
+            Ok(Auth::Accept)
+        } else {
+            Ok(Auth::reject())
+        }
+    }
+
+    async fn auth_publickey(
+        &mut self,
+        user: &str,
+        public_key: &PublicKey,
+    ) -> Result<Auth, Self::Error> {
+        if user == USER
+            && self
+                .authorized_key
+                .as_ref()
+                .is_some_and(|expected| expected == public_key)
+        {
             Ok(Auth::Accept)
         } else {
             Ok(Auth::reject())
@@ -515,6 +585,24 @@ fn upstream_url(scheme: &str, addr: SocketAddr, username: &str, password: &str) 
         "{scheme}://{username}:{password}@127.0.0.1:{}",
         addr.port()
     ))?)
+}
+
+fn ssh_private_key_upstream_url(addr: SocketAddr, username: &str, key_path: &Path) -> Result<Url> {
+    let mut url = Url::parse(&format!("ssh://{username}@127.0.0.1:{}", addr.port()))?;
+    url.query_pairs_mut().append_pair(
+        "key",
+        key_path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("test key path is not UTF-8"))?,
+    );
+    Ok(url)
+}
+
+fn write_test_private_key(path: PathBuf, seed: u64) -> Result<(PathBuf, PublicKey)> {
+    let key = PrivateKey::random(&mut DeterministicRng::with_seed(seed), Algorithm::Ed25519)?;
+    let public_key = key.public_key().clone();
+    key.write_openssh_file(&path, ssh_key::LineEnding::LF)?;
+    Ok((path, public_key))
 }
 
 fn unused_addr() -> Result<SocketAddr> {

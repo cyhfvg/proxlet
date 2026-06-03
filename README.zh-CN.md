@@ -82,7 +82,12 @@ proxlet --type https --tls-cert certs/proxlet-cert.pem --tls-key certs/proxlet-k
 ```bash
 proxlet --proxy 'socks5h://username:password@127.0.0.1:1080'
 proxlet --proxy 'ssh://username:password@127.0.0.1:22'
+proxlet --proxy 'ssh://username@127.0.0.1:22?key=/home/username/.ssh/id_ed25519'
 ```
+
+SSH 上游可使用 `ssh://username:password@host:port` 进行密码认证，也可添加
+`?key=/path/to/private_key` 进行公钥认证。如果 URL 同时包含密码和 `key`，
+该密码会作为私钥口令使用。
 
 若需要通过 HTTPS 代理连接两个 `proxlet` 实例，请先使用证书启动上游实例，
 再将上游实例的 CA 证书提供给下游实例：

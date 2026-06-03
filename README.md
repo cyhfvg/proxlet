@@ -82,7 +82,13 @@ the proxy's hostname or IP address when generating files for another host:
 ```bash
 proxlet --proxy 'socks5h://username:password@127.0.0.1:1080'
 proxlet --proxy 'ssh://username:password@127.0.0.1:22'
+proxlet --proxy 'ssh://username@127.0.0.1:22?key=/home/username/.ssh/id_ed25519'
 ```
+
+For SSH upstreams, use `ssh://username:password@host:port` for password
+authentication or add `?key=/path/to/private_key` for public-key
+authentication. When both a password and `key` are present, the password is
+used as the private key passphrase.
 
 To chain two `proxlet` instances through an HTTPS proxy, start the upstream
 instance with its certificate, then provide its CA certificate to the

@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::{self, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
@@ -8,6 +8,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use percent_encoding::percent_decode_str;
 use russh::client;
+use russh::keys::PrivateKeyWithHashAlg;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
@@ -57,6 +58,27 @@ struct Endpoint {
 }
 
 #[derive(Clone, Debug)]
+struct SshEndpoint {
+    target: Target,
+    auth: SshAuthentication,
+}
+
+#[derive(Clone, Debug)]
+struct SshAuthentication {
+    username: String,
+    method: SshAuthenticationMethod,
+}
+
+#[derive(Clone, Debug)]
+enum SshAuthenticationMethod {
+    Password(String),
+    PrivateKey {
+        path: PathBuf,
+        passphrase: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug)]
 enum Upstream {
     Http(Endpoint),
     Https(Endpoint),
@@ -64,7 +86,7 @@ enum Upstream {
         endpoint: Endpoint,
         remote_dns: bool,
     },
-    Ssh(Endpoint),
+    Ssh(SshEndpoint),
 }
 
 #[derive(Clone)]
@@ -157,13 +179,14 @@ fn add_ca_certificates(roots: &mut RootCertStore, path: &Path) -> Result<()> {
 }
 
 fn parse_upstream(url: Url) -> Result<Upstream> {
+    let target = Target::new(
+        url.host_str()
+            .ok_or_else(|| anyhow::anyhow!("upstream proxy URL has no host"))?,
+        url.port_or_known_default()
+            .ok_or_else(|| anyhow::anyhow!("upstream proxy URL has no port"))?,
+    );
     let endpoint = Endpoint {
-        target: Target::new(
-            url.host_str()
-                .ok_or_else(|| anyhow::anyhow!("upstream proxy URL has no host"))?,
-            url.port_or_known_default()
-                .ok_or_else(|| anyhow::anyhow!("upstream proxy URL has no port"))?,
-        ),
+        target: target.clone(),
         credentials: credentials(&url)?,
     };
     match url.scheme() {
@@ -177,12 +200,7 @@ fn parse_upstream(url: Url) -> Result<Upstream> {
             endpoint,
             remote_dns: true,
         }),
-        "ssh" => {
-            if endpoint.credentials.is_none() {
-                bail!("ssh upstream URL requires username and password")
-            }
-            Ok(Upstream::Ssh(endpoint))
-        }
+        "ssh" => Ok(Upstream::Ssh(parse_ssh_upstream(target, &url)?)),
         schema => bail!("unsupported upstream proxy scheme: {schema}"),
     }
 }
@@ -194,6 +212,44 @@ fn credentials(url: &Url) -> Result<Option<Credentials>> {
     let username = decode_url_component(url.username())?;
     let password = decode_url_component(url.password().unwrap_or_default())?;
     Ok(Some(Credentials { username, password }))
+}
+
+fn parse_ssh_upstream(target: Target, url: &Url) -> Result<SshEndpoint> {
+    let credentials = credentials(url)?;
+    let identity = ssh_identity_path(url)?;
+    let auth = match (credentials, identity) {
+        (Some(credentials), Some(path)) => SshAuthentication {
+            username: credentials.username,
+            method: SshAuthenticationMethod::PrivateKey {
+                path,
+                passphrase: non_empty(credentials.password),
+            },
+        },
+        (Some(credentials), None) if !credentials.password.is_empty() => SshAuthentication {
+            username: credentials.username,
+            method: SshAuthenticationMethod::Password(credentials.password),
+        },
+        (Some(_), None) => bail!("ssh password authentication requires a password"),
+        (None, Some(_)) => bail!("ssh private-key authentication requires a username"),
+        (None, None) => bail!("ssh upstream URL requires username and password or ?key=<file>"),
+    };
+    Ok(SshEndpoint { target, auth })
+}
+
+fn ssh_identity_path(url: &Url) -> Result<Option<PathBuf>> {
+    for (name, value) in url.query_pairs() {
+        if matches!(name.as_ref(), "key" | "identity" | "identity_file") {
+            if value.is_empty() {
+                bail!("ssh private key path is empty")
+            }
+            return Ok(Some(PathBuf::from(value.into_owned())));
+        }
+    }
+    Ok(None)
+}
+
+fn non_empty(value: String) -> Option<String> {
+    if value.is_empty() { None } else { Some(value) }
 }
 
 fn decode_url_component(value: &str) -> Result<String> {
@@ -353,11 +409,7 @@ impl client::Handler for SshHandler {
     }
 }
 
-async fn ssh_connect(endpoint: &Endpoint, target: &Target) -> Result<BoxStream> {
-    let auth = endpoint
-        .credentials
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("ssh upstream credentials are required"))?;
+async fn ssh_connect(endpoint: &SshEndpoint, target: &Target) -> Result<BoxStream> {
     let config = Arc::new(client::Config {
         nodelay: true,
         ..Default::default()
@@ -369,9 +421,24 @@ async fn ssh_connect(endpoint: &Endpoint, target: &Target) -> Result<BoxStream> 
     )
     .await
     .context("could not establish SSH upstream session")?;
-    let result = session
-        .authenticate_password(auth.username.clone(), auth.password.clone())
-        .await?;
+    let result = match &endpoint.auth.method {
+        SshAuthenticationMethod::Password(password) => {
+            session
+                .authenticate_password(endpoint.auth.username.clone(), password.clone())
+                .await?
+        }
+        SshAuthenticationMethod::PrivateKey { path, passphrase } => {
+            let key = russh::keys::load_secret_key(path, passphrase.as_deref())
+                .with_context(|| format!("could not load SSH private key {}", path.display()))?;
+            let hash_alg = session.best_supported_rsa_hash().await?.flatten();
+            session
+                .authenticate_publickey(
+                    endpoint.auth.username.clone(),
+                    PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg),
+                )
+                .await?
+        }
+    };
     if !result.success() {
         bail!("SSH upstream authentication failed")
     }
@@ -401,5 +468,23 @@ mod tests {
     fn accepts_ssh_upstream_url() {
         let url = Url::parse("ssh://user:password@localhost:22").expect("URL");
         assert!(matches!(parse_upstream(url), Ok(Upstream::Ssh(_))));
+    }
+
+    #[test]
+    fn accepts_ssh_upstream_private_key_url() {
+        let url =
+            Url::parse("ssh://user@localhost:22?key=/home/user/.ssh/id_ed25519").expect("URL");
+        let upstream = parse_upstream(url).expect("upstream");
+
+        match upstream {
+            Upstream::Ssh(endpoint) => {
+                assert_eq!(endpoint.auth.username, "user");
+                assert!(matches!(
+                    endpoint.auth.method,
+                    SshAuthenticationMethod::PrivateKey { .. }
+                ));
+            }
+            _ => panic!("expected SSH upstream"),
+        }
     }
 }

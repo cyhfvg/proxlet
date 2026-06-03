@@ -14,7 +14,7 @@ Last updated: 2026-06-03
 
 - SOCKS `UDP ASSOCIATE` and `BIND` are not currently implemented; TCP
   `CONNECT` is the supported proxy operation.
-- SSH upstream authentication currently supports URL password credentials;
-  private-key and agent authentication are future additions.
+- SSH upstream authentication currently supports URL password credentials and
+  private-key files; agent authentication is a future addition.
 - SSH upstream server host keys are trusted directly by design; this tool does
   not maintain or enforce `known_hosts` state.
