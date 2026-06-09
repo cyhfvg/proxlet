@@ -408,6 +408,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "crypto-primes"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21f41f23de7d24cdbda7f0c4d9c0351f99a4ceb258ef30e5c1927af8987ffe5a"
+dependencies = [
+ "crypto-bigint",
+ "libm",
+ "rand_core",
+]
+
+[[package]]
 name = "ctr"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1086,6 +1097,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
+name = "libm"
+version = "0.2.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1315,6 +1332,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
+name = "pkcs1"
+version = "0.8.0-rc.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "986d2e952779af96ea048f160fd9194e1751b4faea78bcf3ceb456efe008088e"
+dependencies = [
+ "der",
+ "spki",
+]
+
+[[package]]
 name = "pkcs5"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1417,7 +1444,7 @@ dependencies = [
 
 [[package]]
 name = "proxlet"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "base64",
@@ -1492,6 +1519,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "rsa"
+version = "0.10.0-rc.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "30b2aa4ba0d89f73d1e332df05be0eeab8840351c36ca5654341dfdb57bb3caf"
+dependencies = [
+ "const-oid",
+ "crypto-bigint",
+ "crypto-primes",
+ "digest",
+ "pkcs1",
+ "pkcs8",
+ "rand_core",
+ "sha2",
+ "signature",
+ "spki",
+ "zeroize",
+]
+
+[[package]]
 name = "russh"
 version = "0.61.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1535,12 +1581,14 @@ dependencies = [
  "p521",
  "pageant",
  "pbkdf2",
+ "pkcs1",
  "pkcs5",
  "pkcs8",
  "polyval",
  "rand",
  "rand_core",
  "ring",
+ "rsa",
  "russh-cryptovec",
  "russh-util",
  "salsa20",
@@ -1889,6 +1937,7 @@ checksum = "7abf34aa716da5d5b4c496936d042ea282ab392092cd68a72ef6a8863ff8c96a"
 dependencies = [
  "base64ct",
  "bytes",
+ "crypto-bigint",
  "ctutils",
  "digest",
  "pem-rfc7468",
@@ -1911,6 +1960,7 @@ dependencies = [
  "p384",
  "p521",
  "rand_core",
+ "rsa",
  "sec1",
  "sha1",
  "sha2",

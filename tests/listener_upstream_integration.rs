@@ -176,6 +176,30 @@ async fn chains_through_live_ssh_upstream_with_private_key_authentication() -> R
 }
 
 #[tokio::test]
+async fn chains_through_live_ssh_upstream_with_rsa_private_key_authentication() -> Result<()> {
+    let keys = tempfile::tempdir()?;
+    let (key_path, public_key) = write_test_rsa_private_key(keys.path().join("id_rsa"), 4)?;
+    let origin = start_origin("SSH-RSA-KEY").await?;
+    let upstream = start_ssh_upstream(Some(public_key)).await?;
+    let proxlet = start_proxlet(
+        ProxyType::Http,
+        Some(ssh_private_key_upstream_url(
+            upstream.addr,
+            USER,
+            &key_path,
+        )?),
+        None,
+    )
+    .await?;
+
+    let response = proxy_get_plain(proxlet.addr, "localhost", origin.addr.port()).await?;
+
+    assert_response_body(&response, "SSH-RSA-KEY");
+    origin.task.await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn ssh_upstream_private_key_authentication_failure_returns_bad_gateway() -> Result<()> {
     let keys = tempfile::tempdir()?;
     let (_, public_key) = write_test_private_key(keys.path().join("accepted_ed25519"), 2)?;
@@ -600,6 +624,16 @@ fn ssh_private_key_upstream_url(addr: SocketAddr, username: &str, key_path: &Pat
 
 fn write_test_private_key(path: PathBuf, seed: u64) -> Result<(PathBuf, PublicKey)> {
     let key = PrivateKey::random(&mut DeterministicRng::with_seed(seed), Algorithm::Ed25519)?;
+    let public_key = key.public_key().clone();
+    key.write_openssh_file(&path, ssh_key::LineEnding::LF)?;
+    Ok((path, public_key))
+}
+
+fn write_test_rsa_private_key(path: PathBuf, seed: u64) -> Result<(PathBuf, PublicKey)> {
+    let key = PrivateKey::from(ssh_key::private::RsaKeypair::random(
+        &mut DeterministicRng::with_seed(seed),
+        2048,
+    )?);
     let public_key = key.public_key().clone();
     key.write_openssh_file(&path, ssh_key::LineEnding::LF)?;
     Ok((path, public_key))

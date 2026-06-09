@@ -12,6 +12,7 @@ fn main() -> Result<()> {
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_io()
+        .enable_time()
         .build()?
         .block_on(proxlet::run(cli))
 }

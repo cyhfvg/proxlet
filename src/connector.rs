@@ -8,7 +8,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use percent_encoding::percent_decode_str;
 use russh::client;
-use russh::keys::PrivateKeyWithHashAlg;
+use russh::keys::{Algorithm, HashAlg, PrivateKeyWithHashAlg};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
@@ -421,25 +421,21 @@ async fn ssh_connect(endpoint: &SshEndpoint, target: &Target) -> Result<BoxStrea
     )
     .await
     .context("could not establish SSH upstream session")?;
-    let result = match &endpoint.auth.method {
-        SshAuthenticationMethod::Password(password) => {
-            session
-                .authenticate_password(endpoint.auth.username.clone(), password.clone())
-                .await?
-        }
+    let authenticated = match &endpoint.auth.method {
+        SshAuthenticationMethod::Password(password) => session
+            .authenticate_password(endpoint.auth.username.clone(), password.clone())
+            .await?
+            .success(),
         SshAuthenticationMethod::PrivateKey { path, passphrase } => {
-            let key = russh::keys::load_secret_key(path, passphrase.as_deref())
-                .with_context(|| format!("could not load SSH private key {}", path.display()))?;
-            let hash_alg = session.best_supported_rsa_hash().await?.flatten();
-            session
-                .authenticate_publickey(
-                    endpoint.auth.username.clone(),
-                    PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg),
-                )
-                .await?
+            let key = Arc::new(
+                russh::keys::load_secret_key(path, passphrase.as_deref()).with_context(|| {
+                    format!("could not load SSH private key {}", path.display())
+                })?,
+            );
+            authenticate_private_key(&mut session, endpoint.auth.username.clone(), key).await?
         }
     };
-    if !result.success() {
+    if !authenticated {
         bail!("SSH upstream authentication failed")
     }
     let channel = session
@@ -447,6 +443,45 @@ async fn ssh_connect(endpoint: &SshEndpoint, target: &Target) -> Result<BoxStrea
         .await
         .with_context(|| format!("SSH server could not forward to {}", target.authority()))?;
     Ok(Box::new(channel.into_stream()))
+}
+
+async fn authenticate_private_key(
+    session: &mut client::Handle<SshHandler>,
+    username: String,
+    key: Arc<russh::keys::PrivateKey>,
+) -> Result<bool> {
+    let key_algorithm = key.algorithm();
+    let server_rsa_hash = if matches!(key_algorithm, Algorithm::Rsa { .. }) {
+        session.best_supported_rsa_hash().await?
+    } else {
+        None
+    };
+    for hash_alg in publickey_hash_algorithms(key_algorithm, server_rsa_hash) {
+        let result = session
+            .authenticate_publickey(
+                username.clone(),
+                PrivateKeyWithHashAlg::new(key.clone(), hash_alg),
+            )
+            .await?;
+        if result.success() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn publickey_hash_algorithms(
+    key_algorithm: Algorithm,
+    server_rsa_hash: Option<Option<HashAlg>>,
+) -> Vec<Option<HashAlg>> {
+    if !matches!(key_algorithm, Algorithm::Rsa { .. }) {
+        return vec![None];
+    }
+
+    match server_rsa_hash {
+        Some(hash_alg) => vec![hash_alg],
+        None => vec![Some(HashAlg::Sha512), Some(HashAlg::Sha256), None],
+    }
 }
 
 pub async fn relay(mut client: BoxStream, mut remote: BoxStream) -> io::Result<()> {
@@ -486,5 +521,33 @@ mod tests {
             }
             _ => panic!("expected SSH upstream"),
         }
+    }
+
+    #[test]
+    fn tries_rsa_sha2_when_server_does_not_advertise_signature_algorithms() {
+        assert_eq!(
+            publickey_hash_algorithms(Algorithm::Rsa { hash: None }, None),
+            vec![Some(HashAlg::Sha512), Some(HashAlg::Sha256), None,]
+        );
+    }
+
+    #[test]
+    fn uses_server_advertised_rsa_signature_algorithm() {
+        assert_eq!(
+            publickey_hash_algorithms(Algorithm::Rsa { hash: None }, Some(Some(HashAlg::Sha256))),
+            vec![Some(HashAlg::Sha256)]
+        );
+        assert_eq!(
+            publickey_hash_algorithms(Algorithm::Rsa { hash: None }, Some(None)),
+            vec![None]
+        );
+    }
+
+    #[test]
+    fn ignores_hash_algorithm_for_non_rsa_keys() {
+        assert_eq!(
+            publickey_hash_algorithms(Algorithm::Ed25519, Some(Some(HashAlg::Sha512))),
+            vec![None]
+        );
     }
 }
