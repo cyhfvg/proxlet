@@ -45,7 +45,11 @@ pub struct Cli {
     pub proxy_type: ProxyType,
 
     /// Chain traffic through an upstream proxy URL.
-    #[arg(long, value_name = "SCHEMA_URL")]
+    #[arg(
+        long,
+        value_name = "SCHEMA_URL",
+        help = "Chain traffic through an upstream proxy URL. Examples: http://user:pass@host:8080, https://user:pass@host:8443, socks5://user:pass@host:1080, ssh://user:pass@host:22, ssh://user@host:22?key=/path/to/id_rsa"
+    )]
     pub proxy: Option<Url>,
 
     /// PEM CA certificate bundle used to verify an HTTPS upstream proxy.
@@ -158,6 +162,7 @@ impl Cli {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
 
     #[test]
     fn parses_requested_command_line_options() {
@@ -209,5 +214,18 @@ mod tests {
         assert_eq!(comma_separated.allow_ip.len(), 2);
         assert_eq!(cidr.allow_ip.len(), 1);
         assert!(cidr.allow_ip[0].contains(&"127.10.20.30".parse().expect("IP")));
+    }
+
+    #[test]
+    fn proxy_help_includes_uri_examples() {
+        let mut help = Vec::new();
+        Cli::command().write_help(&mut help).expect("help renders");
+        let help = String::from_utf8(help).expect("help is UTF-8");
+
+        assert!(help.contains("http://user:pass@host:8080"));
+        assert!(help.contains("https://user:pass@host:8443"));
+        assert!(help.contains("socks5://user:pass@host:1080"));
+        assert!(help.contains("ssh://user:pass@host:22"));
+        assert!(help.contains("ssh://user@host:22?key=/path/to/id_rsa"));
     }
 }
