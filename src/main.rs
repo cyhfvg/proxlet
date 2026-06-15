@@ -1,7 +1,24 @@
+//! Binary entry point for proxlet.
+
 use anyhow::Result;
 use clap::Parser;
 use proxlet::Cli;
 
+/// Parse CLI options and run proxlet in daemon or foreground mode.
+///
+/// # Parameters
+///
+/// This function takes no parameters.
+///
+/// # Returns
+///
+/// Returns `Ok(())` when daemon spawning succeeds or the foreground server exits
+/// cleanly.
+///
+/// # Errors
+///
+/// Returns an error when CLI-driven daemon spawning, Tokio runtime creation, or
+/// server execution fails.
 fn main() -> Result<()> {
     let cli = Cli::parse();
     if cli.daemon {

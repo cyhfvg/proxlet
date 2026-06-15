@@ -1,3 +1,9 @@
+//! Background process launcher for daemon mode.
+//!
+//! This module starts a detached child process with the same executable and
+//! command-line options, excluding daemon flags so the child runs in the normal
+//! foreground server path.
+
 use std::env;
 use std::ffi::OsString;
 use std::process::{Command, Stdio};
@@ -8,6 +14,19 @@ use anyhow::{Context, Result};
 use std::io;
 
 /// Start a detached copy of the current executable and return its process ID.
+///
+/// # Parameters
+///
+/// This function takes no parameters.
+///
+/// # Returns
+///
+/// Returns the process ID of the spawned child.
+///
+/// # Errors
+///
+/// Returns an error when the current executable path cannot be determined or
+/// the detached child process cannot be spawned.
 pub fn spawn() -> Result<u32> {
     let executable = env::current_exe().context("could not determine current executable path")?;
     let mut command = Command::new(executable);
@@ -23,6 +42,19 @@ pub fn spawn() -> Result<u32> {
     Ok(child.id())
 }
 
+/// Remove daemon flags from arguments passed to the detached child process.
+///
+/// # Parameters
+///
+/// * `arguments` - Original command-line arguments excluding argv[0].
+///
+/// # Returns
+///
+/// Returns filtered arguments without `--daemon` or `-d`.
+///
+/// # Errors
+///
+/// This function does not return errors.
 fn background_args(arguments: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
     arguments
         .into_iter()
@@ -31,6 +63,19 @@ fn background_args(arguments: impl IntoIterator<Item = OsString>) -> Vec<OsStrin
 }
 
 #[cfg(unix)]
+/// Configure Unix child process detachment.
+///
+/// # Parameters
+///
+/// * `command` - Command that will spawn the detached child.
+///
+/// # Returns
+///
+/// This function returns `()`.
+///
+/// # Errors
+///
+/// Any `setsid` failure is returned later by `Command::spawn`.
 fn configure_detached_process(command: &mut Command) {
     use std::os::unix::process::CommandExt;
 
@@ -47,6 +92,20 @@ fn configure_detached_process(command: &mut Command) {
 }
 
 #[cfg(windows)]
+/// Configure Windows child process detachment.
+///
+/// # Parameters
+///
+/// * `command` - Command that will spawn the detached child.
+///
+/// # Returns
+///
+/// This function returns `()`.
+///
+/// # Errors
+///
+/// Detachment setup itself does not return errors; spawn failures are reported
+/// by `Command::spawn`.
 fn configure_detached_process(command: &mut Command) {
     use std::os::windows::process::CommandExt;
 
@@ -58,6 +117,19 @@ fn configure_detached_process(command: &mut Command) {
 }
 
 #[cfg(not(any(unix, windows)))]
+/// Leave child process configuration unchanged on unsupported platforms.
+///
+/// # Parameters
+///
+/// * `_command` - Command that will spawn the child.
+///
+/// # Returns
+///
+/// This function returns `()`.
+///
+/// # Errors
+///
+/// This function does not return errors.
 fn configure_detached_process(_command: &mut Command) {}
 
 #[cfg(test)]

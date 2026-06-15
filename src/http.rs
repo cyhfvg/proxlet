@@ -1,3 +1,9 @@
+//! HTTP forward proxy listener implementation.
+//!
+//! This module parses HTTP proxy requests, performs optional Basic
+//! authentication, rewrites absolute-form requests to origin-form, and relays
+//! CONNECT tunnels or regular HTTP traffic.
+
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
@@ -11,6 +17,23 @@ use crate::connector::{BoxStream, Connector, Target, relay};
 
 const MAX_HEADER_SIZE: usize = 64 * 1024;
 
+/// Serve one HTTP proxy client connection.
+///
+/// # Parameters
+///
+/// * `client` - Accepted client stream.
+/// * `initial` - Bytes already read by mixed-mode protocol detection.
+/// * `connector` - Connector used to reach the target or upstream proxy.
+/// * `auth` - Optional listener Basic authentication credentials.
+///
+/// # Returns
+///
+/// Returns `Ok(())` after the connection finishes.
+///
+/// # Errors
+///
+/// Returns an error when request parsing, authentication response writing,
+/// target connection, header rewriting, or bidirectional relay fails.
 pub async fn serve(
     mut client: BoxStream,
     initial: &[u8],
@@ -54,6 +77,21 @@ pub async fn serve(
     Ok(())
 }
 
+/// Read an HTTP request header.
+///
+/// # Parameters
+///
+/// * `stream` - Client stream to read.
+/// * `initial` - Bytes already consumed by protocol detection.
+///
+/// # Returns
+///
+/// Returns request header bytes including CRLFCRLF.
+///
+/// # Errors
+///
+/// Returns an error when the header exceeds the limit, the client closes early,
+/// or I/O fails.
 async fn read_header(stream: &mut BoxStream, initial: &[u8]) -> Result<Vec<u8>> {
     let mut header = initial.to_vec();
     while !header.ends_with(b"\r\n\r\n") {
@@ -68,6 +106,7 @@ async fn read_header(stream: &mut BoxStream, initial: &[u8]) -> Result<Vec<u8>> 
 }
 
 #[derive(Debug)]
+/// Parsed HTTP proxy request header.
 struct Request {
     method: String,
     uri: String,
@@ -76,6 +115,20 @@ struct Request {
 }
 
 impl Request {
+    /// Parse an HTTP proxy request header.
+    ///
+    /// # Parameters
+    ///
+    /// * `bytes` - Header bytes ending in CRLFCRLF.
+    ///
+    /// # Returns
+    ///
+    /// Returns a parsed [`Request`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the header is not UTF-8, the request line is
+    /// invalid, or a header line is malformed.
     fn parse(bytes: &[u8]) -> Result<Self> {
         let text = std::str::from_utf8(bytes)?;
         let mut lines = text.trim_end_matches("\r\n\r\n").split("\r\n");
@@ -104,6 +157,20 @@ impl Request {
         })
     }
 
+    /// Check listener Basic authentication for this request.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Parsed HTTP request.
+    /// * `auth` - Optional expected credentials.
+    ///
+    /// # Returns
+    ///
+    /// Returns `true` when authentication is disabled or credentials match.
+    ///
+    /// # Errors
+    ///
+    /// This function does not return errors.
     fn is_authorized(&self, auth: Option<&Auth>) -> bool {
         let Some(auth) = auth else {
             return true;
@@ -117,6 +184,20 @@ impl Request {
         })
     }
 
+    /// Determine the target endpoint requested by the HTTP proxy client.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Parsed HTTP request.
+    ///
+    /// # Returns
+    ///
+    /// Returns the target endpoint for CONNECT or absolute-form HTTP requests.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the URI is invalid, lacks host/port information, or
+    /// uses an unsupported scheme.
     fn target(&self) -> Result<Target> {
         if self.method.eq_ignore_ascii_case("CONNECT") {
             return parse_authority(&self.uri, 443);
@@ -135,6 +216,19 @@ impl Request {
         ))
     }
 
+    /// Rewrite an absolute-form request header to origin-form for the origin server.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Parsed absolute-form HTTP request.
+    ///
+    /// # Returns
+    ///
+    /// Returns rewritten header bytes suitable for the origin server.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the request URI is not a valid absolute URI.
     fn origin_form_header(&self) -> Result<Vec<u8>> {
         let uri = Url::parse(&self.uri)
             .map_err(|_| anyhow::anyhow!("forward proxy requests must use an absolute URI"))?;
@@ -159,6 +253,20 @@ impl Request {
     }
 }
 
+/// Parse an HTTP authority into a target.
+///
+/// # Parameters
+///
+/// * `authority` - Authority text from CONNECT or URI host data.
+/// * `default_port` - Port used when the authority omits one.
+///
+/// # Returns
+///
+/// Returns the parsed target.
+///
+/// # Errors
+///
+/// Returns an error when an explicit port is malformed.
 fn parse_authority(authority: &str, default_port: u16) -> Result<Target> {
     if authority.starts_with('[') {
         let closing = authority

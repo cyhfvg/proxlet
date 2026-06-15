@@ -1,3 +1,10 @@
+//! fakehttp proxlet-to-proxlet transport implementation.
+//!
+//! fakehttp wraps arbitrary proxy traffic in HTTP-looking requests and
+//! responses. When an AES secret is configured, payload frames are encrypted
+//! with AES-256-GCM using deterministic parameters derived from the secret and
+//! per-session token.
+
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -16,6 +23,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use crate::connector::{BoxStream, Connector, Target, relay};
 
 const MAX_HEADER_SIZE: usize = 64 * 1024;
+/// Default fakehttp encrypted frame payload size in bytes.
 pub const DEFAULT_MAX_FRAME_SIZE: usize = 16 * 1024;
 const MAX_SUPPORTED_FRAME_SIZE: usize = 64 * 1024;
 const READ_CHUNK_SIZE: usize = 8192;
@@ -29,6 +37,24 @@ const CRYPTO_ENCODING: &str = "aes-256-gcm";
 const MAX_FRAME_SIZE_HEADER: &str = "X-Proxlet-Max-Frame-Size";
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+/// Serve one inbound fakehttp tunnel from a downstream proxlet.
+///
+/// # Parameters
+///
+/// * `client` - Accepted stream from the downstream proxlet.
+/// * `connector` - Connector used to dial the final target.
+/// * `aes_secret` - Optional AES secret required for encrypted tunnels.
+/// * `max_frame_size` - Listener-side maximum encrypted frame payload size.
+///
+/// # Returns
+///
+/// Returns `Ok(())` after the tunneled connection finishes.
+///
+/// # Errors
+///
+/// Returns an error when the fakehttp request is invalid, encryption policy does
+/// not match, target connection fails, HTTP response writing fails, or relaying
+/// traffic fails.
 pub async fn serve(
     mut client: BoxStream,
     connector: Arc<Connector>,
@@ -61,6 +87,8 @@ pub async fn serve(
         (false, None) => None,
     };
 
+    // Reply with a normal-looking HTTP error when target dialing fails, then
+    // propagate the original error to the server log.
     let remote = match connector.connect(&target).await {
         Ok(remote) => remote,
         Err(error) => {
@@ -89,10 +117,29 @@ pub async fn serve(
         )?,
         None => client,
     };
+    // After the HTTP handshake, both directions become raw tunneled streams.
     relay(client, remote).await?;
     Ok(())
 }
 
+/// Connect to an upstream fakehttp listener and return a tunneled stream.
+///
+/// # Parameters
+///
+/// * `stream` - Connected TCP stream to the upstream fakehttp listener.
+/// * `endpoint` - fakehttp listener endpoint used for the HTTP Host header.
+/// * `target` - Final destination requested by the local client.
+/// * `aes_secret` - Optional AES secret used to encrypt payload frames.
+/// * `max_frame_size` - Downstream maximum encrypted frame payload size.
+///
+/// # Returns
+///
+/// Returns a boxed stream that carries plaintext target traffic.
+///
+/// # Errors
+///
+/// Returns an error when request writing, fakehttp response parsing,
+/// negotiation, or crypto stream initialization fails.
 pub async fn connect(
     mut stream: BoxStream,
     endpoint: &Target,
@@ -132,6 +179,23 @@ pub async fn connect(
     }
 }
 
+/// Build the HTTP request header used to open a fakehttp tunnel.
+///
+/// # Parameters
+///
+/// * `endpoint` - Upstream fakehttp endpoint.
+/// * `target` - Final destination encoded into the URL path.
+/// * `encrypted` - Whether to advertise AES-256-GCM frame encoding.
+/// * `session` - Per-tunnel session token.
+/// * `max_frame_size` - Requested maximum payload frame size in bytes.
+///
+/// # Returns
+///
+/// Returns a complete HTTP request header ending in CRLFCRLF.
+///
+/// # Errors
+///
+/// This function does not return errors.
 fn request_header(
     endpoint: &Target,
     target: &Target,
@@ -157,6 +221,20 @@ fn request_header(
     request
 }
 
+/// Generate a per-tunnel session token.
+///
+/// # Parameters
+///
+/// * `target` - Final destination included in the token input.
+///
+/// # Returns
+///
+/// Returns a URL-safe token used in the fakehttp request path and crypto
+/// derivation.
+///
+/// # Errors
+///
+/// This function does not return errors.
 fn session_token(target: &Target) -> String {
     let counter = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
     let now = SystemTime::now()
@@ -176,6 +254,20 @@ fn session_token(target: &Target) -> String {
     URL_SAFE_NO_PAD.encode(&digest[..SALT_SIZE])
 }
 
+/// Read an HTTP header from a fakehttp stream.
+///
+/// # Parameters
+///
+/// * `stream` - Stream to read from.
+///
+/// # Returns
+///
+/// Returns header bytes including the CRLFCRLF terminator.
+///
+/// # Errors
+///
+/// Returns an error when the header exceeds the configured limit, the stream
+/// ends early, or I/O fails.
 async fn read_header(stream: &mut BoxStream) -> Result<Vec<u8>> {
     let mut header = Vec::with_capacity(256);
     while !header.ends_with(b"\r\n\r\n") {
@@ -190,12 +282,28 @@ async fn read_header(stream: &mut BoxStream) -> Result<Vec<u8>> {
 }
 
 #[derive(Debug)]
+/// Parsed inbound fakehttp HTTP request.
 struct Request {
     path: String,
     headers: Vec<(String, String)>,
 }
 
 impl Request {
+    /// Parse a fakehttp HTTP request header.
+    ///
+    /// # Parameters
+    ///
+    /// * `bytes` - Header bytes ending in CRLFCRLF.
+    ///
+    /// # Returns
+    ///
+    /// Returns a parsed [`Request`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the header is not UTF-8, lacks a valid request
+    /// line, uses an unsupported method/path/version, or contains malformed
+    /// header lines.
     fn parse(bytes: &[u8]) -> Result<Self> {
         let text = std::str::from_utf8(bytes)?;
         let mut lines = text.trim_end_matches("\r\n\r\n").split("\r\n");
@@ -223,12 +331,40 @@ impl Request {
         })
     }
 
+    /// Decode the final target from the fakehttp request path.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Parsed fakehttp request.
+    ///
+    /// # Returns
+    ///
+    /// Returns the decoded target endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the path is malformed, the target token is invalid,
+    /// or the decoded authority is invalid.
     fn target(&self) -> Result<Target> {
         let (_, token) = self.path_parts()?;
         let authority = String::from_utf8(URL_SAFE_NO_PAD.decode(token)?)?;
         parse_authority(&authority)
     }
 
+    /// Extract the fakehttp session token from the request path.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Parsed fakehttp request.
+    ///
+    /// # Returns
+    ///
+    /// Returns the session token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the path is malformed or the session token is
+    /// empty.
     fn session(&self) -> Result<String> {
         let (session, _) = self.path_parts()?;
         if session.is_empty() {
@@ -237,6 +373,19 @@ impl Request {
         Ok(session.to_owned())
     }
 
+    /// Split the fakehttp path suffix into session and target token.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Parsed fakehttp request.
+    ///
+    /// # Returns
+    ///
+    /// Returns `(session, target_token)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the path prefix or separator is missing.
     fn path_parts(&self) -> Result<(&str, &str)> {
         let suffix = self
             .path
@@ -247,6 +396,19 @@ impl Request {
             .ok_or_else(|| anyhow::anyhow!("fakehttp request path is missing session or target"))
     }
 
+    /// Check whether the request asks for AES-256-GCM payload encoding.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Parsed fakehttp request.
+    ///
+    /// # Returns
+    ///
+    /// Returns `true` when `Content-Encoding` matches the fakehttp crypto value.
+    ///
+    /// # Errors
+    ///
+    /// This function does not return errors.
     fn wants_crypto(&self) -> bool {
         self.headers.iter().any(|(name, value)| {
             name.eq_ignore_ascii_case("Content-Encoding")
@@ -254,18 +416,47 @@ impl Request {
         })
     }
 
+    /// Parse the requested fakehttp frame size header.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Parsed fakehttp request.
+    ///
+    /// # Returns
+    ///
+    /// Returns the requested frame size when present.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the frame size header is not numeric or is outside
+    /// the supported range.
     fn max_frame_size(&self) -> Result<Option<usize>> {
         parse_max_frame_size_header(&self.headers)
     }
 }
 
 #[derive(Debug)]
+/// Parsed upstream fakehttp HTTP response.
 struct Response {
     status: String,
     headers: Vec<(String, String)>,
 }
 
 impl Response {
+    /// Parse a fakehttp HTTP response header.
+    ///
+    /// # Parameters
+    ///
+    /// * `bytes` - Header bytes ending in CRLFCRLF.
+    ///
+    /// # Returns
+    ///
+    /// Returns a parsed [`Response`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the response is not UTF-8, lacks a status line, or
+    /// contains malformed header lines.
     fn parse(bytes: &[u8]) -> Result<Self> {
         let text = std::str::from_utf8(bytes)?;
         let mut lines = text.trim_end_matches("\r\n\r\n").split("\r\n");
@@ -285,11 +476,38 @@ impl Response {
         })
     }
 
+    /// Parse the negotiated fakehttp frame size header.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Parsed fakehttp response.
+    ///
+    /// # Returns
+    ///
+    /// Returns the negotiated frame size when present.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the frame size header is not numeric or is outside
+    /// the supported range.
     fn max_frame_size(&self) -> Result<Option<usize>> {
         parse_max_frame_size_header(&self.headers)
     }
 }
 
+/// Parse a fakehttp frame-size header from an HTTP header list.
+///
+/// # Parameters
+///
+/// * `headers` - Parsed HTTP header pairs.
+///
+/// # Returns
+///
+/// Returns the frame size when the header is present.
+///
+/// # Errors
+///
+/// Returns an error when the header value is invalid.
 fn parse_max_frame_size_header(headers: &[(String, String)]) -> Result<Option<usize>> {
     headers
         .iter()
@@ -298,6 +516,20 @@ fn parse_max_frame_size_header(headers: &[(String, String)]) -> Result<Option<us
         .transpose()
 }
 
+/// Parse a frame-size header value in bytes.
+///
+/// # Parameters
+///
+/// * `value` - Header value to parse.
+///
+/// # Returns
+///
+/// Returns the parsed frame size in bytes.
+///
+/// # Errors
+///
+/// Returns an error when `value` is not numeric or is outside the supported
+/// range.
 fn parse_max_frame_size(value: &str) -> Result<usize> {
     let size = value.parse::<usize>()?;
     if !(8 * 1024..=MAX_SUPPORTED_FRAME_SIZE).contains(&size) {
@@ -306,10 +538,36 @@ fn parse_max_frame_size(value: &str) -> Result<usize> {
     Ok(size)
 }
 
+/// Clamp a frame size into the supported fakehttp range.
+///
+/// # Parameters
+///
+/// * `size` - Requested frame size in bytes.
+///
+/// # Returns
+///
+/// Returns a frame size between 8 KiB and 64 KiB.
+///
+/// # Errors
+///
+/// This function does not return errors.
 fn normalize_max_frame_size(size: usize) -> usize {
     size.clamp(8 * 1024, MAX_SUPPORTED_FRAME_SIZE)
 }
 
+/// Parse an HTTP authority into a target.
+///
+/// # Parameters
+///
+/// * `authority` - Authority string in `host:port` or `[ipv6]:port` form.
+///
+/// # Returns
+///
+/// Returns the parsed target.
+///
+/// # Errors
+///
+/// Returns an error when the authority is malformed or lacks a port.
 fn parse_authority(authority: &str) -> Result<Target> {
     if authority.starts_with('[') {
         let closing = authority
@@ -332,11 +590,31 @@ fn parse_authority(authority: &str) -> Result<Target> {
 }
 
 #[derive(Clone, Copy)]
+/// Directional role used to select fakehttp read/write crypto labels.
 pub enum CryptoRole {
+    /// Downstream proxlet side of the tunnel.
     Client,
+    /// Upstream proxlet side of the tunnel.
     Server,
 }
 
+/// Wrap a stream in AES-GCM fakehttp frame encryption.
+///
+/// # Parameters
+///
+/// * `stream` - Plain stream to wrap.
+/// * `secret` - Shared AES secret.
+/// * `session` - Per-tunnel session token.
+/// * `role` - Crypto role for read/write direction labels.
+/// * `max_frame_size` - Maximum encrypted payload frame size.
+///
+/// # Returns
+///
+/// Returns a boxed stream that reads and writes plaintext.
+///
+/// # Errors
+///
+/// Returns an error when AES-GCM initialization fails.
 fn encrypt_stream(
     stream: BoxStream,
     secret: &str,
@@ -353,6 +631,7 @@ fn encrypt_stream(
     )?))
 }
 
+/// Async stream adapter that encrypts writes and decrypts reads in fakehttp frames.
 struct CryptoStream {
     inner: BoxStream,
     read_cipher: CipherDirection,
@@ -367,6 +646,23 @@ struct CryptoStream {
 }
 
 impl CryptoStream {
+    /// Create a crypto stream with directional ciphers.
+    ///
+    /// # Parameters
+    ///
+    /// * `inner` - Underlying fakehttp byte stream.
+    /// * `secret` - Shared AES secret.
+    /// * `session` - Per-tunnel session token.
+    /// * `role` - Client or server role.
+    /// * `max_frame_size` - Maximum frame payload size.
+    ///
+    /// # Returns
+    ///
+    /// Returns an initialized [`CryptoStream`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when cipher initialization fails.
     fn new(
         inner: BoxStream,
         secret: &str,
@@ -399,10 +695,39 @@ impl CryptoStream {
         })
     }
 
+    /// Return the number of queued encrypted bytes waiting to be written.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Crypto stream state.
+    ///
+    /// # Returns
+    ///
+    /// Returns the pending encrypted output byte count.
+    ///
+    /// # Errors
+    ///
+    /// This function does not return errors.
     fn pending_encrypted_out(&self) -> usize {
         self.encrypted_out.len() - self.encrypted_out_start
     }
 
+    /// Try to write one pending encrypted output slice to the inner stream.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Pinned crypto stream.
+    /// * `context` - Async task context.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ready(Ok(()))` after one write attempt succeeds or no output is
+    /// pending, `Pending` if the inner stream is not ready.
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O errors from the inner stream or `WriteZero` when the inner
+    /// stream accepts zero bytes.
     fn poll_write_pending_once(
         mut self: Pin<&mut Self>,
         context: &mut Context<'_>,
@@ -429,6 +754,20 @@ impl CryptoStream {
         Poll::Ready(Ok(()))
     }
 
+    /// Flush queued encrypted output into the inner stream.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Pinned crypto stream.
+    /// * `context` - Async task context.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ready(Ok(()))` when no queued encrypted output remains.
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O errors from pending writes.
     fn poll_flush_pending(
         mut self: Pin<&mut Self>,
         context: &mut Context<'_>,
@@ -442,6 +781,20 @@ impl CryptoStream {
         Poll::Ready(Ok(()))
     }
 
+    /// Decrypt one complete frame from the encrypted input buffer.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Crypto stream state.
+    ///
+    /// # Returns
+    ///
+    /// Returns `true` when a frame was decrypted and queued as plaintext.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the frame length is invalid or decryption
+    /// authentication fails.
     fn try_decrypt_frame(&mut self) -> io::Result<bool> {
         let available = self.encrypted_in.len() - self.encrypted_in_start;
         if available < FRAME_HEADER_SIZE {
@@ -468,6 +821,8 @@ impl CryptoStream {
         let frame_end = ciphertext_start + len;
         let plaintext_len = len - TAG_SIZE;
         {
+            // Decrypt in place so the encrypted input allocation can be reused
+            // across frames without allocating a fresh plaintext buffer.
             let frame = &mut self.encrypted_in[ciphertext_start..frame_end];
             let (ciphertext, tag_bytes) = frame.split_at_mut(plaintext_len);
             let tag = Tag::from_slice(tag_bytes);
@@ -481,6 +836,20 @@ impl CryptoStream {
         Ok(true)
     }
 
+    /// Queue one encrypted frame for outbound plaintext bytes.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Crypto stream state.
+    /// * `bytes` - Plaintext bytes offered by the caller.
+    ///
+    /// # Returns
+    ///
+    /// Returns the number of plaintext bytes accepted into the frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when frame length conversion or encryption fails.
     fn queue_encrypted(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let count = bytes.len().min(self.max_frame_size);
         let frame_len = u32::try_from(count + TAG_SIZE).map_err(|_| {
@@ -492,6 +861,8 @@ impl CryptoStream {
         self.encrypted_out.extend(frame_len.to_be_bytes());
         let plaintext_start = self.encrypted_out.len();
         self.encrypted_out.extend_from_slice(&bytes[..count]);
+        // AES-GCM writes ciphertext over the queued plaintext and returns the
+        // authentication tag separately, avoiding a per-frame output allocation.
         let tag = self
             .write_cipher
             .encrypt_in_place(&mut self.encrypted_out[plaintext_start..plaintext_start + count])?;
@@ -499,6 +870,20 @@ impl CryptoStream {
         Ok(count)
     }
 
+    /// Copy queued plaintext into a caller-provided read buffer.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Crypto stream state.
+    /// * `buffer` - Tokio read buffer to fill.
+    ///
+    /// # Returns
+    ///
+    /// Returns `true` when at least one byte was copied.
+    ///
+    /// # Errors
+    ///
+    /// This function does not return errors.
     fn read_plaintext_into(&mut self, buffer: &mut ReadBuf<'_>) -> bool {
         if self.plaintext_in_start >= self.plaintext_in.len() {
             self.clear_plaintext_in();
@@ -512,6 +897,19 @@ impl CryptoStream {
         count > 0
     }
 
+    /// Compact or clear consumed encrypted input bytes.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Crypto stream state.
+    ///
+    /// # Returns
+    ///
+    /// This function returns `()`.
+    ///
+    /// # Errors
+    ///
+    /// This function does not return errors.
     fn compact_encrypted_in(&mut self) {
         if self.encrypted_in_start == 0 {
             return;
@@ -525,6 +923,19 @@ impl CryptoStream {
         }
     }
 
+    /// Compact or clear consumed encrypted output bytes.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Crypto stream state.
+    ///
+    /// # Returns
+    ///
+    /// This function returns `()`.
+    ///
+    /// # Errors
+    ///
+    /// This function does not return errors.
     fn compact_encrypted_out(&mut self) {
         if self.encrypted_out_start == 0 {
             return;
@@ -538,6 +949,19 @@ impl CryptoStream {
         }
     }
 
+    /// Clear the plaintext input buffer after all bytes are consumed.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Crypto stream state.
+    ///
+    /// # Returns
+    ///
+    /// This function returns `()`.
+    ///
+    /// # Errors
+    ///
+    /// This function does not return errors.
     fn clear_plaintext_in(&mut self) {
         if self.plaintext_in_start >= self.plaintext_in.len() {
             self.plaintext_in.clear();
@@ -547,6 +971,23 @@ impl CryptoStream {
 }
 
 impl AsyncRead for CryptoStream {
+    /// Poll for decrypted plaintext from the fakehttp stream.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Pinned crypto stream.
+    /// * `context` - Async task context.
+    /// * `buffer` - Destination read buffer.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ready(Ok(()))` when bytes are available or EOF is reached, and
+    /// `Pending` when the inner stream is not ready.
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O errors, unexpected EOF for incomplete frames, or invalid-data
+    /// errors for failed decryption.
     fn poll_read(
         mut self: Pin<&mut Self>,
         context: &mut Context<'_>,
@@ -590,6 +1031,21 @@ impl AsyncRead for CryptoStream {
 }
 
 impl AsyncWrite for CryptoStream {
+    /// Poll to encrypt and queue plaintext bytes.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Pinned crypto stream.
+    /// * `context` - Async task context.
+    /// * `bytes` - Plaintext bytes to write.
+    ///
+    /// # Returns
+    ///
+    /// Returns the number of plaintext bytes accepted by the crypto stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O errors from encryption or the inner stream.
     fn poll_write(
         mut self: Pin<&mut Self>,
         context: &mut Context<'_>,
@@ -617,6 +1073,20 @@ impl AsyncWrite for CryptoStream {
         }
     }
 
+    /// Poll to flush all queued encrypted output.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Pinned crypto stream.
+    /// * `context` - Async task context.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ready(Ok(()))` when queued output and inner stream flush finish.
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O errors from pending writes or inner flush.
     fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
         match self.as_mut().poll_flush_pending(context) {
             Poll::Ready(Ok(())) => Pin::new(&mut self.inner).poll_flush(context),
@@ -624,6 +1094,20 @@ impl AsyncWrite for CryptoStream {
         }
     }
 
+    /// Poll to flush queued frames and shut down the inner stream.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Pinned crypto stream.
+    /// * `context` - Async task context.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ready(Ok(()))` when shutdown completes.
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O errors from pending writes or inner shutdown.
     fn poll_shutdown(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
         match self.as_mut().poll_flush_pending(context) {
             Poll::Ready(Ok(())) => Pin::new(&mut self.inner).poll_shutdown(context),
@@ -632,6 +1116,7 @@ impl AsyncWrite for CryptoStream {
     }
 }
 
+/// AES-GCM cipher state for one tunnel direction.
 struct CipherDirection {
     cipher: Aes256Gcm,
     base_nonce: [u8; NONCE_SIZE],
@@ -639,6 +1124,22 @@ struct CipherDirection {
 }
 
 impl CipherDirection {
+    /// Create cipher state for a direction label.
+    ///
+    /// # Parameters
+    ///
+    /// * `secret` - Shared AES secret.
+    /// * `session` - Per-tunnel session token.
+    /// * `direction` - Direction label used for nonce derivation.
+    ///
+    /// # Returns
+    ///
+    /// Returns initialized cipher state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when AES-256-GCM cannot be initialized from the derived
+    /// key.
     fn new(secret: &str, session: &str, direction: &[u8]) -> Result<Self> {
         let salt = derive_salt(secret, session);
         let key = derive_key(secret, &salt);
@@ -651,6 +1152,20 @@ impl CipherDirection {
         })
     }
 
+    /// Encrypt plaintext in place and return its authentication tag.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Directional cipher state.
+    /// * `plaintext` - Mutable plaintext buffer to encrypt in place.
+    ///
+    /// # Returns
+    ///
+    /// Returns the AES-GCM authentication tag.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when nonce generation or encryption fails.
     fn encrypt_in_place(&mut self, plaintext: &mut [u8]) -> io::Result<Tag> {
         let nonce = self.next_nonce()?;
         self.cipher
@@ -658,6 +1173,21 @@ impl CipherDirection {
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "fakehttp encryption failed"))
     }
 
+    /// Decrypt ciphertext in place and authenticate the tag.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Directional cipher state.
+    /// * `ciphertext` - Mutable ciphertext buffer to decrypt in place.
+    /// * `tag` - AES-GCM authentication tag.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` after successful decryption.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when nonce generation fails or authentication fails.
     fn decrypt_in_place(&mut self, ciphertext: &mut [u8], tag: &Tag) -> io::Result<()> {
         let nonce = self.next_nonce()?;
         self.cipher
@@ -665,6 +1195,19 @@ impl CipherDirection {
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "fakehttp decryption failed"))
     }
 
+    /// Derive the next per-frame nonce.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Directional cipher state.
+    ///
+    /// # Returns
+    ///
+    /// Returns a 96-bit AES-GCM nonce.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the frame counter overflows.
     fn next_nonce(&mut self) -> io::Result<[u8; NONCE_SIZE]> {
         let counter = self.counter;
         self.counter = self.counter.checked_add(1).ok_or_else(|| {
@@ -681,6 +1224,20 @@ impl CipherDirection {
     }
 }
 
+/// Derive a deterministic salt from the shared secret and session token.
+///
+/// # Parameters
+///
+/// * `secret` - Shared AES secret.
+/// * `session` - Per-tunnel session token.
+///
+/// # Returns
+///
+/// Returns a 128-bit salt.
+///
+/// # Errors
+///
+/// This function does not return errors.
 fn derive_salt(secret: &str, session: &str) -> [u8; SALT_SIZE] {
     let digest = Sha256::digest(
         [
@@ -695,6 +1252,20 @@ fn derive_salt(secret: &str, session: &str) -> [u8; SALT_SIZE] {
     salt
 }
 
+/// Derive a 256-bit AES key from the shared secret and salt.
+///
+/// # Parameters
+///
+/// * `secret` - Shared AES secret.
+/// * `salt` - Salt derived for the session.
+///
+/// # Returns
+///
+/// Returns a 256-bit AES-GCM key.
+///
+/// # Errors
+///
+/// This function does not return errors.
 fn derive_key(secret: &str, salt: &[u8; SALT_SIZE]) -> [u8; 32] {
     let digest = Sha256::digest(
         [
@@ -709,6 +1280,22 @@ fn derive_key(secret: &str, salt: &[u8; SALT_SIZE]) -> [u8; 32] {
     key
 }
 
+/// Derive the base nonce for one fakehttp traffic direction.
+///
+/// # Parameters
+///
+/// * `secret` - Shared AES secret.
+/// * `session` - Per-tunnel session token.
+/// * `salt` - Salt derived for the session.
+/// * `direction` - Direction label.
+///
+/// # Returns
+///
+/// Returns a 96-bit base nonce.
+///
+/// # Errors
+///
+/// This function does not return errors.
 fn derive_nonce(
     secret: &str,
     session: &str,

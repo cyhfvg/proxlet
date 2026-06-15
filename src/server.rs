@@ -1,3 +1,8 @@
+//! Server runtime for accepting clients and dispatching proxy protocols.
+//!
+//! This module owns listener setup, client allow-list checks, TLS listener
+//! loading, mixed-mode protocol detection, and per-connection task spawning.
+
 use std::fs::File;
 use std::io::{self, BufReader, Cursor};
 use std::pin::Pin;
@@ -14,6 +19,22 @@ use crate::cli::{Cli, Config, ProxyType};
 use crate::connector::Connector;
 use crate::{fakehttp, http, socks};
 
+/// Run the proxlet server until the process exits.
+///
+/// # Parameters
+///
+/// * `cli` - Parsed command-line options.
+///
+/// # Returns
+///
+/// This function normally runs forever and returns only when listener setup or
+/// accepting a connection fails.
+///
+/// # Errors
+///
+/// Returns an error when configuration conversion, upstream connector setup,
+/// TLS loading, listen binding, local address lookup, or accepting a connection
+/// fails.
 pub async fn run(cli: Cli) -> Result<()> {
     let config = Arc::new(cli.into_config().await?);
     let connector = Arc::new(Connector::with_fakehttp_max_frame_size(
@@ -36,6 +57,8 @@ pub async fn run(cli: Cli) -> Result<()> {
 
     loop {
         let (stream, peer) = listener.accept().await?;
+        // The allow-list is checked before spawning so rejected clients do not
+        // consume per-connection task resources.
         if !config.allowed_ips.is_empty()
             && !config
                 .allowed_ips
@@ -56,6 +79,23 @@ pub async fn run(cli: Cli) -> Result<()> {
     }
 }
 
+/// Serve one accepted TCP client according to configured proxy type.
+///
+/// # Parameters
+///
+/// * `stream` - Accepted TCP client stream.
+/// * `config` - Shared runtime configuration.
+/// * `connector` - Shared upstream connector.
+/// * `tls` - Optional TLS acceptor for HTTPS listener or mixed TLS detection.
+///
+/// # Returns
+///
+/// Returns `Ok(())` when the client connection finishes successfully.
+///
+/// # Errors
+///
+/// Returns an error from protocol handling, TLS acceptance, missing TLS
+/// configuration, or traffic relay.
 async fn serve_client(
     stream: TcpStream,
     config: Arc<Config>,
@@ -87,6 +127,23 @@ async fn serve_client(
     }
 }
 
+/// Detect the client protocol for mixed listener mode.
+///
+/// # Parameters
+///
+/// * `stream` - Accepted TCP stream.
+/// * `connector` - Shared upstream connector.
+/// * `auth` - Optional listener authentication credentials.
+/// * `tls` - Optional TLS acceptor used for HTTPS-looking clients.
+///
+/// # Returns
+///
+/// Returns `Ok(())` when the selected protocol handler completes.
+///
+/// # Errors
+///
+/// Returns an error when the first byte cannot be read, TLS is required but not
+/// configured, TLS acceptance fails, or the selected protocol handler fails.
 async fn serve_mixed(
     mut stream: TcpStream,
     connector: Arc<Connector>,
@@ -95,6 +152,8 @@ async fn serve_mixed(
 ) -> Result<()> {
     let mut first = [0_u8; 1];
     stream.read_exact(&mut first).await?;
+    // Mixed mode uses the first byte only for dispatch, then replays it through
+    // PrefixStream for protocols that still need to consume it.
     match first[0] {
         0x05 => socks::serve(Box::new(stream), Some(0x05), connector, auth).await,
         0x16 => {
@@ -110,6 +169,21 @@ async fn serve_mixed(
     }
 }
 
+/// Load TLS listener configuration from PEM certificate and key files.
+///
+/// # Parameters
+///
+/// * `config` - Runtime configuration containing optional TLS file paths.
+///
+/// # Returns
+///
+/// Returns a TLS acceptor when both TLS files are configured, otherwise `None`.
+///
+/// # Errors
+///
+/// Returns an error when files cannot be opened, PEM parsing fails, the
+/// certificate list is empty, no private key is present, or rustls rejects the
+/// certificate/key pair.
 fn load_tls(config: &Config) -> Result<Option<TlsAcceptor>> {
     let (Some(cert_path), Some(key_path)) = (&config.tls_cert, &config.tls_key) else {
         return Ok(None);
@@ -132,12 +206,27 @@ fn load_tls(config: &Config) -> Result<Option<TlsAcceptor>> {
     Ok(Some(TlsAcceptor::from(Arc::new(server))))
 }
 
+/// Stream wrapper that replays bytes already consumed during protocol detection.
 struct PrefixStream {
     prefix: Cursor<Vec<u8>>,
     inner: TcpStream,
 }
 
 impl PrefixStream {
+    /// Create a stream that yields `prefix` before reading from `inner`.
+    ///
+    /// # Parameters
+    ///
+    /// * `prefix` - Bytes to replay first.
+    /// * `inner` - TCP stream to read after the prefix.
+    ///
+    /// # Returns
+    ///
+    /// Returns a new [`PrefixStream`].
+    ///
+    /// # Errors
+    ///
+    /// This function does not return errors.
     fn new(prefix: Vec<u8>, inner: TcpStream) -> Self {
         Self {
             prefix: Cursor::new(prefix),
@@ -147,6 +236,22 @@ impl PrefixStream {
 }
 
 impl AsyncRead for PrefixStream {
+    /// Poll bytes from the replay prefix, then the inner TCP stream.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Pinned prefix stream.
+    /// * `context` - Async task context.
+    /// * `buffer` - Destination read buffer.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ready(Ok(()))` when bytes or EOF are available, and `Pending`
+    /// when the inner stream is not ready.
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O errors from the inner stream.
     fn poll_read(
         mut self: Pin<&mut Self>,
         context: &mut Context<'_>,
@@ -165,6 +270,21 @@ impl AsyncRead for PrefixStream {
 }
 
 impl AsyncWrite for PrefixStream {
+    /// Poll to write bytes to the inner stream.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Pinned prefix stream.
+    /// * `context` - Async task context.
+    /// * `bytes` - Bytes to write.
+    ///
+    /// # Returns
+    ///
+    /// Returns the number of bytes written.
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O errors from the inner stream.
     fn poll_write(
         mut self: Pin<&mut Self>,
         context: &mut Context<'_>,
@@ -173,10 +293,38 @@ impl AsyncWrite for PrefixStream {
         Pin::new(&mut self.inner).poll_write(context, bytes)
     }
 
+    /// Poll to flush the inner stream.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Pinned prefix stream.
+    /// * `context` - Async task context.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ready(Ok(()))` once flushing completes.
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O errors from the inner stream.
     fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.inner).poll_flush(context)
     }
 
+    /// Poll to shut down the inner stream.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Pinned prefix stream.
+    /// * `context` - Async task context.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ready(Ok(()))` once shutdown completes.
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O errors from the inner stream.
     fn poll_shutdown(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.inner).poll_shutdown(context)
     }

@@ -1,3 +1,8 @@
+//! SOCKS5 listener implementation.
+//!
+//! This module handles SOCKS5 CONNECT requests, optional username/password
+//! authentication, target address parsing, and bidirectional relaying.
+
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 
@@ -7,6 +12,23 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::cli::Auth;
 use crate::connector::{BoxStream, Connector, Target, relay};
 
+/// Serve one SOCKS5 client connection.
+///
+/// # Parameters
+///
+/// * `client` - Accepted client stream.
+/// * `first_byte` - Optional first byte already read by mixed-mode detection.
+/// * `connector` - Connector used to reach the requested target.
+/// * `auth` - Optional listener username/password credentials.
+///
+/// # Returns
+///
+/// Returns `Ok(())` after the connection finishes.
+///
+/// # Errors
+///
+/// Returns an error when the SOCKS version is unsupported, authentication
+/// fails, the request is unsupported, target connection fails, or relay fails.
 pub async fn serve(
     mut client: BoxStream,
     first_byte: Option<u8>,
@@ -34,6 +56,22 @@ pub async fn serve(
     Ok(())
 }
 
+/// Negotiate SOCKS5 authentication with the client.
+///
+/// # Parameters
+///
+/// * `client` - SOCKS5 client stream.
+/// * `auth` - Optional expected username/password credentials.
+///
+/// # Returns
+///
+/// Returns `Ok(())` after an acceptable method is selected and credentials
+/// validate when required.
+///
+/// # Errors
+///
+/// Returns an error when the client omits required methods, sends invalid auth
+/// framing, provides wrong credentials, or I/O fails.
 async fn authenticate(client: &mut BoxStream, auth: Option<&Auth>) -> Result<()> {
     let method_count = read_u8(client).await? as usize;
     let mut methods = vec![0_u8; method_count];
@@ -59,6 +97,20 @@ async fn authenticate(client: &mut BoxStream, auth: Option<&Auth>) -> Result<()>
     Ok(())
 }
 
+/// Read a SOCKS5 CONNECT request target.
+///
+/// # Parameters
+///
+/// * `client` - SOCKS5 client stream.
+///
+/// # Returns
+///
+/// Returns the requested target endpoint.
+///
+/// # Errors
+///
+/// Returns an error when the command is not CONNECT, the address type is
+/// unsupported, address data is invalid, or I/O fails.
 async fn read_request(client: &mut BoxStream) -> Result<Target> {
     let mut prefix = [0_u8; 3];
     client.read_exact(&mut prefix).await?;
@@ -88,6 +140,20 @@ async fn read_request(client: &mut BoxStream) -> Result<Target> {
     Ok(Target::new(host, u16::from_be_bytes(port)))
 }
 
+/// Write a SOCKS5 CONNECT reply.
+///
+/// # Parameters
+///
+/// * `client` - SOCKS5 client stream.
+/// * `status` - SOCKS5 reply status code.
+///
+/// # Returns
+///
+/// Returns `Ok(())` after the reply is written.
+///
+/// # Errors
+///
+/// Returns an error when writing to the client fails.
 async fn write_reply(client: &mut BoxStream, status: u8) -> Result<()> {
     client
         .write_all(&[0x05, status, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
@@ -95,6 +161,19 @@ async fn write_reply(client: &mut BoxStream, status: u8) -> Result<()> {
     Ok(())
 }
 
+/// Read a SOCKS length-prefixed UTF-8 string.
+///
+/// # Parameters
+///
+/// * `client` - SOCKS5 client stream.
+///
+/// # Returns
+///
+/// Returns the decoded string.
+///
+/// # Errors
+///
+/// Returns an error when reading fails or bytes are not valid UTF-8.
 async fn read_string(client: &mut BoxStream) -> Result<String> {
     let length = read_u8(client).await? as usize;
     let mut bytes = vec![0_u8; length];
@@ -102,6 +181,19 @@ async fn read_string(client: &mut BoxStream) -> Result<String> {
     Ok(String::from_utf8(bytes)?)
 }
 
+/// Read one byte from a SOCKS stream.
+///
+/// # Parameters
+///
+/// * `client` - SOCKS5 client stream.
+///
+/// # Returns
+///
+/// Returns the byte read from the stream.
+///
+/// # Errors
+///
+/// Returns an error when the stream closes early or I/O fails.
 async fn read_u8(client: &mut BoxStream) -> Result<u8> {
     let mut byte = [0_u8; 1];
     client.read_exact(&mut byte).await?;

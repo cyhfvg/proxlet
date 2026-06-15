@@ -1,3 +1,8 @@
+//! Upstream connection management for direct and chained proxy traffic.
+//!
+//! The connector hides direct TCP dialing, HTTP/HTTPS CONNECT, SOCKS5,
+//! fakehttp, and SSH upstream setup behind one async `connect` operation.
+
 use std::fs::File;
 use std::io::{self, BufReader};
 use std::path::{Path, PathBuf};
@@ -18,19 +23,38 @@ use url::Url;
 
 use crate::fakehttp;
 
+/// Async stream requirements shared by all proxlet transport implementations.
 pub trait AsyncStream: AsyncRead + AsyncWrite + Unpin + Send {}
 
 impl<T> AsyncStream for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
 
+/// Boxed async stream used when the concrete transport type is selected at runtime.
 pub type BoxStream = Box<dyn AsyncStream>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A network endpoint resolved as host and port.
 pub struct Target {
+    /// Hostname or IP address.
     pub host: String,
+    /// TCP port.
     pub port: u16,
 }
 
 impl Target {
+    /// Build a target from host and port components.
+    ///
+    /// # Parameters
+    ///
+    /// * `host` - Hostname or IP address.
+    /// * `port` - TCP port.
+    ///
+    /// # Returns
+    ///
+    /// Returns a new [`Target`].
+    ///
+    /// # Errors
+    ///
+    /// This function does not return errors.
     pub fn new(host: impl Into<String>, port: u16) -> Self {
         Self {
             host: host.into(),
@@ -38,6 +62,19 @@ impl Target {
         }
     }
 
+    /// Format the endpoint as an HTTP authority.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Target to format.
+    ///
+    /// # Returns
+    ///
+    /// Returns `host:port`, with IPv6 hosts wrapped in brackets.
+    ///
+    /// # Errors
+    ///
+    /// This function does not return errors.
     pub fn authority(&self) -> String {
         if self.host.contains(':') && !self.host.starts_with('[') {
             format!("[{}]:{}", self.host, self.port)
@@ -48,32 +85,39 @@ impl Target {
 }
 
 #[derive(Clone, Debug)]
+/// Username/password pair decoded from an upstream URL.
 struct Credentials {
     username: String,
     password: String,
 }
 
 #[derive(Clone, Debug)]
+/// Upstream proxy endpoint plus optional credentials.
 struct Endpoint {
     target: Target,
     credentials: Option<Credentials>,
 }
 
 #[derive(Clone, Debug)]
+/// SSH upstream endpoint plus its authentication configuration.
 struct SshEndpoint {
     target: Target,
     auth: SshAuthentication,
 }
 
 #[derive(Clone, Debug)]
+/// SSH username and authentication method.
 struct SshAuthentication {
     username: String,
     method: SshAuthenticationMethod,
 }
 
 #[derive(Clone, Debug)]
+/// Authentication methods supported for SSH upstream proxying.
 enum SshAuthenticationMethod {
+    /// Password authentication.
     Password(String),
+    /// Public-key authentication with optional key passphrase.
     PrivateKey {
         path: PathBuf,
         passphrase: Option<String>,
@@ -81,21 +125,28 @@ enum SshAuthenticationMethod {
 }
 
 #[derive(Clone, Debug)]
+/// Parsed upstream proxy configuration.
 enum Upstream {
+    /// Plain HTTP CONNECT upstream proxy.
     Http(Endpoint),
+    /// HTTPS CONNECT upstream proxy.
     Https(Endpoint),
+    /// SOCKS5 upstream proxy.
     Socks5 {
         endpoint: Endpoint,
         remote_dns: bool,
     },
+    /// fakehttp proxlet-to-proxlet upstream.
     FakeHttp {
         endpoint: Endpoint,
         aes_secret: Option<String>,
     },
+    /// SSH direct-tcpip upstream proxy.
     Ssh(SshEndpoint),
 }
 
 #[derive(Clone)]
+/// Connection factory for direct traffic or a configured upstream proxy chain.
 pub struct Connector {
     upstream: Option<Upstream>,
     tls: Arc<ClientConfig>,
@@ -103,10 +154,40 @@ pub struct Connector {
 }
 
 impl Connector {
+    /// Create a connector with the default fakehttp frame size.
+    ///
+    /// # Parameters
+    ///
+    /// * `url` - Optional upstream proxy URL.
+    /// * `upstream_ca` - Optional CA bundle for HTTPS upstream verification.
+    ///
+    /// # Returns
+    ///
+    /// Returns a configured [`Connector`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the upstream URL is unsupported, credentials cannot
+    /// be decoded, SSH options are invalid, or the CA bundle cannot be loaded.
     pub fn new(url: Option<Url>, upstream_ca: Option<&Path>) -> Result<Self> {
         Self::with_fakehttp_max_frame_size(url, upstream_ca, fakehttp::DEFAULT_MAX_FRAME_SIZE)
     }
 
+    /// Create a connector with an explicit fakehttp frame size.
+    ///
+    /// # Parameters
+    ///
+    /// * `url` - Optional upstream proxy URL.
+    /// * `upstream_ca` - Optional CA bundle for HTTPS upstream verification.
+    /// * `fakehttp_max_frame_size` - Maximum fakehttp payload frame size in bytes.
+    ///
+    /// # Returns
+    ///
+    /// Returns a configured [`Connector`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when upstream parsing or CA loading fails.
     pub fn with_fakehttp_max_frame_size(
         url: Option<Url>,
         upstream_ca: Option<&Path>,
@@ -129,6 +210,21 @@ impl Connector {
         })
     }
 
+    /// Connect to a target through the configured upstream path.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Connector configuration and TLS client state.
+    /// * `target` - Final destination requested by the client.
+    ///
+    /// # Returns
+    ///
+    /// Returns an established bidirectional stream to `target`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when TCP dialing, TLS negotiation, proxy handshakes,
+    /// fakehttp negotiation, or SSH forwarding fails.
     pub async fn connect(&self, target: &Target) -> Result<BoxStream> {
         match &self.upstream {
             None => Ok(Box::new(connect_tcp(target).await?)),
@@ -175,6 +271,22 @@ impl Connector {
         }
     }
 
+    /// Wrap a TCP stream in TLS for HTTPS upstream proxying.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Connector containing the client TLS configuration.
+    /// * `stream` - Connected TCP stream to the HTTPS proxy.
+    /// * `host` - DNS name used for TLS verification.
+    ///
+    /// # Returns
+    ///
+    /// Returns a boxed TLS stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the server name is invalid or the TLS handshake
+    /// fails.
     async fn tls_connect(&self, stream: TcpStream, host: &str) -> Result<BoxStream> {
         let name = ServerName::try_from(host.to_owned())
             .with_context(|| format!("invalid TLS server name {host}"))?;
@@ -185,6 +297,21 @@ impl Connector {
     }
 }
 
+/// Add PEM CA certificates to a rustls root store.
+///
+/// # Parameters
+///
+/// * `roots` - Root certificate store to extend.
+/// * `path` - PEM file containing one or more CA certificates.
+///
+/// # Returns
+///
+/// Returns `Ok(())` after all certificates are added.
+///
+/// # Errors
+///
+/// Returns an error when the file cannot be opened, contains no certificates,
+/// contains invalid PEM, or a certificate cannot be accepted by rustls.
 fn add_ca_certificates(roots: &mut RootCertStore, path: &Path) -> Result<()> {
     let mut reader = BufReader::new(
         File::open(path)
@@ -208,6 +335,20 @@ fn add_ca_certificates(roots: &mut RootCertStore, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Parse an upstream proxy URL into an internal upstream configuration.
+///
+/// # Parameters
+///
+/// * `url` - User-provided upstream proxy URL.
+///
+/// # Returns
+///
+/// Returns a parsed [`Upstream`] variant.
+///
+/// # Errors
+///
+/// Returns an error when the URL is missing host or port information, uses an
+/// unsupported scheme, has malformed credentials, or has invalid SSH options.
 fn parse_upstream(url: Url) -> Result<Upstream> {
     let target = Target::new(
         url.host_str()
@@ -239,6 +380,19 @@ fn parse_upstream(url: Url) -> Result<Upstream> {
     }
 }
 
+/// Decode username/password credentials from a URL.
+///
+/// # Parameters
+///
+/// * `url` - Upstream URL containing optional userinfo.
+///
+/// # Returns
+///
+/// Returns decoded credentials or `None` when no username was supplied.
+///
+/// # Errors
+///
+/// Returns an error when percent-decoding or UTF-8 decoding fails.
 fn credentials(url: &Url) -> Result<Option<Credentials>> {
     if url.username().is_empty() {
         return Ok(None);
@@ -248,6 +402,21 @@ fn credentials(url: &Url) -> Result<Option<Credentials>> {
     Ok(Some(Credentials { username, password }))
 }
 
+/// Parse SSH-specific upstream authentication settings.
+///
+/// # Parameters
+///
+/// * `target` - SSH server endpoint.
+/// * `url` - SSH upstream URL.
+///
+/// # Returns
+///
+/// Returns an [`SshEndpoint`] with a selected authentication method.
+///
+/// # Errors
+///
+/// Returns an error when required username/password/key data is missing or
+/// malformed.
 fn parse_ssh_upstream(target: Target, url: &Url) -> Result<SshEndpoint> {
     let credentials = credentials(url)?;
     let identity = ssh_identity_path(url)?;
@@ -270,6 +439,19 @@ fn parse_ssh_upstream(target: Target, url: &Url) -> Result<SshEndpoint> {
     Ok(SshEndpoint { target, auth })
 }
 
+/// Extract an SSH identity file path from URL query parameters.
+///
+/// # Parameters
+///
+/// * `url` - SSH upstream URL.
+///
+/// # Returns
+///
+/// Returns an optional private key path.
+///
+/// # Errors
+///
+/// Returns an error when a recognized key parameter is present but empty.
 fn ssh_identity_path(url: &Url) -> Result<Option<PathBuf>> {
     for (name, value) in url.query_pairs() {
         if matches!(name.as_ref(), "key" | "identity" | "identity_file") {
@@ -282,14 +464,53 @@ fn ssh_identity_path(url: &Url) -> Result<Option<PathBuf>> {
     Ok(None)
 }
 
+/// Convert an empty string into `None`.
+///
+/// # Parameters
+///
+/// * `value` - Owned string to inspect.
+///
+/// # Returns
+///
+/// Returns `Some(value)` when non-empty, otherwise `None`.
+///
+/// # Errors
+///
+/// This function does not return errors.
 fn non_empty(value: String) -> Option<String> {
     if value.is_empty() { None } else { Some(value) }
 }
 
+/// Percent-decode a URL component into UTF-8 text.
+///
+/// # Parameters
+///
+/// * `value` - Percent-encoded URL component.
+///
+/// # Returns
+///
+/// Returns a decoded string.
+///
+/// # Errors
+///
+/// Returns an error when the decoded bytes are not valid UTF-8.
 fn decode_url_component(value: &str) -> Result<String> {
     Ok(percent_decode_str(value).decode_utf8()?.into_owned())
 }
 
+/// Extract the fakehttp AES secret from an upstream URL.
+///
+/// # Parameters
+///
+/// * `url` - fakehttp upstream URL.
+///
+/// # Returns
+///
+/// Returns the decoded secret from password or username userinfo, or `None`.
+///
+/// # Errors
+///
+/// Returns an error when secret percent-decoding fails.
 fn fakehttp_secret(url: &Url) -> Result<Option<String>> {
     let username = url.username();
     let password = url.password();
@@ -300,12 +521,41 @@ fn fakehttp_secret(url: &Url) -> Result<Option<String>> {
     }
 }
 
+/// Open a direct TCP connection to a target.
+///
+/// # Parameters
+///
+/// * `target` - Destination host and port.
+///
+/// # Returns
+///
+/// Returns an established [`TcpStream`].
+///
+/// # Errors
+///
+/// Returns an error when DNS resolution or TCP connection fails.
 async fn connect_tcp(target: &Target) -> Result<TcpStream> {
     TcpStream::connect((target.host.as_str(), target.port))
         .await
         .with_context(|| format!("could not connect to {}", target.authority()))
 }
 
+/// Establish an HTTP CONNECT tunnel through an upstream proxy.
+///
+/// # Parameters
+///
+/// * `stream` - Connected upstream proxy stream.
+/// * `target` - Final destination authority.
+/// * `credentials` - Optional upstream Basic authentication credentials.
+///
+/// # Returns
+///
+/// Returns `Ok(())` once the upstream proxy reports tunnel establishment.
+///
+/// # Errors
+///
+/// Returns an error when writing the request, reading the response, parsing the
+/// response status, or receiving a non-200 status fails.
 async fn establish_http_tunnel(
     stream: &mut BoxStream,
     target: &Target,
@@ -334,6 +584,23 @@ async fn establish_http_tunnel(
     Ok(())
 }
 
+/// Establish a SOCKS5 CONNECT tunnel through an upstream proxy.
+///
+/// # Parameters
+///
+/// * `stream` - Connected upstream SOCKS5 proxy stream.
+/// * `target` - Final destination.
+/// * `credentials` - Optional username/password credentials.
+/// * `remote_dns` - Whether to send the hostname to the upstream proxy.
+///
+/// # Returns
+///
+/// Returns `Ok(())` once the SOCKS5 proxy has connected to the target.
+///
+/// # Errors
+///
+/// Returns an error when authentication, DNS resolution, request writing, or
+/// proxy response parsing fails.
 async fn socks_connect(
     stream: &mut BoxStream,
     target: &Target,
@@ -402,6 +669,20 @@ async fn socks_connect(
     Ok(())
 }
 
+/// Borrow a string as SOCKS-sized bytes.
+///
+/// # Parameters
+///
+/// * `value` - String value to encode.
+/// * `label` - Human-readable field name for error messages.
+///
+/// # Returns
+///
+/// Returns the borrowed byte slice when it fits in a one-byte length field.
+///
+/// # Errors
+///
+/// Returns an error when `value` is longer than 255 bytes.
 fn sized_bytes<'a>(value: &'a str, label: &str) -> Result<&'a [u8]> {
     let bytes = value.as_bytes();
     if bytes.len() > u8::MAX as usize {
@@ -410,6 +691,20 @@ fn sized_bytes<'a>(value: &'a str, label: &str) -> Result<&'a [u8]> {
     Ok(bytes)
 }
 
+/// Read and discard the bound address from a SOCKS5 response.
+///
+/// # Parameters
+///
+/// * `stream` - Upstream SOCKS5 stream.
+/// * `address_type` - SOCKS5 address type byte from the response header.
+///
+/// # Returns
+///
+/// Returns `Ok(())` after the address and port are consumed.
+///
+/// # Errors
+///
+/// Returns an error when the address type is invalid or the response ends early.
 async fn discard_socks_address(stream: &mut BoxStream, address_type: u8) -> Result<()> {
     let size = match address_type {
         0x01 => 4,
@@ -426,6 +721,21 @@ async fn discard_socks_address(stream: &mut BoxStream, address_type: u8) -> Resu
     Ok(())
 }
 
+/// Read an HTTP-style header until CRLFCRLF or a size limit.
+///
+/// # Parameters
+///
+/// * `stream` - Stream to read from.
+/// * `limit` - Maximum accepted header size in bytes.
+///
+/// # Returns
+///
+/// Returns the complete header bytes including the terminating CRLFCRLF.
+///
+/// # Errors
+///
+/// Returns an error when the header exceeds `limit`, the stream ends early, or
+/// I/O fails.
 async fn read_header(stream: &mut BoxStream, limit: usize) -> Result<Vec<u8>> {
     let mut header = Vec::with_capacity(256);
     while !header.ends_with(b"\r\n\r\n") {
@@ -440,11 +750,26 @@ async fn read_header(stream: &mut BoxStream, limit: usize) -> Result<Vec<u8>> {
 }
 
 #[derive(Clone)]
+/// SSH client handler used for upstream sessions.
 struct SshHandler;
 
 impl client::Handler for SshHandler {
     type Error = anyhow::Error;
 
+    /// Accept any SSH server host key.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Mutable SSH handler state.
+    /// * `_key` - Server public key presented during SSH handshake.
+    ///
+    /// # Returns
+    ///
+    /// Returns `true` to allow the connection.
+    ///
+    /// # Errors
+    ///
+    /// This handler does not return validation errors.
     async fn check_server_key(
         &mut self,
         _key: &russh::keys::ssh_key::PublicKey,
@@ -453,6 +778,21 @@ impl client::Handler for SshHandler {
     }
 }
 
+/// Establish an SSH direct-tcpip channel to a target.
+///
+/// # Parameters
+///
+/// * `endpoint` - SSH upstream endpoint and credentials.
+/// * `target` - Final destination for the direct-tcpip channel.
+///
+/// # Returns
+///
+/// Returns a boxed SSH channel stream.
+///
+/// # Errors
+///
+/// Returns an error when SSH connection, authentication, key loading, or channel
+/// opening fails.
 async fn ssh_connect(endpoint: &SshEndpoint, target: &Target) -> Result<BoxStream> {
     let config = Arc::new(client::Config {
         nodelay: true,
@@ -489,6 +829,22 @@ async fn ssh_connect(endpoint: &SshEndpoint, target: &Target) -> Result<BoxStrea
     Ok(Box::new(channel.into_stream()))
 }
 
+/// Try public-key authentication with compatible hash algorithms.
+///
+/// # Parameters
+///
+/// * `session` - Connected SSH client session.
+/// * `username` - SSH username.
+/// * `key` - Private key used for authentication.
+///
+/// # Returns
+///
+/// Returns `true` when one authentication attempt succeeds.
+///
+/// # Errors
+///
+/// Returns an error when querying server algorithms or an authentication attempt
+/// fails at the protocol level.
 async fn authenticate_private_key(
     session: &mut client::Handle<SshHandler>,
     username: String,
@@ -514,6 +870,20 @@ async fn authenticate_private_key(
     Ok(false)
 }
 
+/// Choose SSH public-key hash algorithms for an authentication attempt.
+///
+/// # Parameters
+///
+/// * `key_algorithm` - Algorithm of the loaded private key.
+/// * `server_rsa_hash` - RSA signature algorithm advertised by the SSH server.
+///
+/// # Returns
+///
+/// Returns ordered hash algorithm candidates to try.
+///
+/// # Errors
+///
+/// This function does not return errors.
 fn publickey_hash_algorithms(
     key_algorithm: Algorithm,
     server_rsa_hash: Option<Option<HashAlg>>,
@@ -528,6 +898,20 @@ fn publickey_hash_algorithms(
     }
 }
 
+/// Relay bytes bidirectionally between a client stream and a remote stream.
+///
+/// # Parameters
+///
+/// * `client` - Client-side stream.
+/// * `remote` - Remote target or upstream stream.
+///
+/// # Returns
+///
+/// Returns `Ok(())` after both directions finish copying.
+///
+/// # Errors
+///
+/// Returns I/O errors from either stream.
 pub async fn relay(mut client: BoxStream, mut remote: BoxStream) -> io::Result<()> {
     tokio::io::copy_bidirectional(&mut client, &mut remote)
         .await

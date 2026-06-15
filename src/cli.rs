@@ -1,3 +1,8 @@
+//! Command-line parsing and runtime configuration for proxlet.
+//!
+//! This module owns the public CLI surface and converts parsed flags into the
+//! normalized configuration consumed by the proxy server.
+
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -82,17 +87,37 @@ pub struct Cli {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+/// Proxy protocols supported by the listening socket.
 pub enum ProxyType {
+    /// HTTP forward proxy mode.
     Http,
+    /// HTTPS listener mode that wraps HTTP proxy traffic in TLS.
     Https,
+    /// SOCKS5 mode with local DNS resolution.
     Socks5,
+    /// SOCKS5 mode with remote DNS resolution when used as an upstream.
     Socks5h,
+    /// Protocol auto-detection mode for HTTP, HTTPS, and SOCKS5.
     Mixed,
+    /// HTTP-shaped tunnel mode for proxlet-to-proxlet links.
     #[value(name = "fakehttp")]
     FakeHttp,
 }
 
 impl std::fmt::Display for ProxyType {
+    /// Format the proxy type as its command-line value.
+    ///
+    /// # Parameters
+    ///
+    /// * `formatter` - Destination formatter provided by the formatting machinery.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` when the proxy type is written successfully.
+    ///
+    /// # Errors
+    ///
+    /// Returns the formatter error if writing to `formatter` fails.
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
             Self::Http => "http",
@@ -105,6 +130,20 @@ impl std::fmt::Display for ProxyType {
     }
 }
 
+/// Parse the fakehttp maximum frame size from KiB CLI input.
+///
+/// # Parameters
+///
+/// * `value` - User-provided frame size in KiB.
+///
+/// # Returns
+///
+/// Returns the accepted frame size in KiB.
+///
+/// # Errors
+///
+/// Returns an error string when the input is not numeric or not one of the
+/// supported values: 8, 16, 32, or 64.
 fn parse_max_frame_size(value: &str) -> std::result::Result<usize, String> {
     let size = value
         .parse::<usize>()
@@ -117,12 +156,28 @@ fn parse_max_frame_size(value: &str) -> std::result::Result<usize, String> {
 }
 
 #[derive(Clone, Debug)]
+/// A client IP allow-list entry.
 pub enum AllowedIp {
+    /// A single allowed IP address.
     Address(IpAddr),
+    /// An allowed CIDR network.
     Network(IpNet),
 }
 
 impl AllowedIp {
+    /// Check whether an IP address is accepted by this allow-list entry.
+    ///
+    /// # Parameters
+    ///
+    /// * `ip` - Client IP address to test.
+    ///
+    /// # Returns
+    ///
+    /// Returns `true` when `ip` matches the address or belongs to the network.
+    ///
+    /// # Errors
+    ///
+    /// This function does not return errors.
     pub fn contains(&self, ip: &IpAddr) -> bool {
         match self {
             Self::Address(allowed) => allowed == ip,
@@ -134,6 +189,20 @@ impl AllowedIp {
 impl FromStr for AllowedIp {
     type Err = anyhow::Error;
 
+    /// Parse an IP address or CIDR network allow-list entry.
+    ///
+    /// # Parameters
+    ///
+    /// * `value` - Text value supplied on the command line.
+    ///
+    /// # Returns
+    ///
+    /// Returns an [`AllowedIp`] address or network entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `value` is neither an IP address nor a CIDR
+    /// network.
     fn from_str(value: &str) -> Result<Self> {
         if let Ok(ip) = value.parse() {
             return Ok(Self::Address(ip));
@@ -146,26 +215,55 @@ impl FromStr for AllowedIp {
 }
 
 #[derive(Clone, Debug)]
+/// Username/password credentials used by listener authentication.
 pub struct Auth {
+    /// Expected username.
     pub username: String,
+    /// Expected password.
     pub password: String,
 }
 
 #[derive(Clone, Debug)]
+/// Normalized runtime configuration used by the server.
 pub struct Config {
+    /// Resolved listen socket address.
     pub listen: SocketAddr,
+    /// Optional client IP allow-list.
     pub allowed_ips: Vec<AllowedIp>,
+    /// Optional listener authentication credentials.
     pub auth: Option<Auth>,
+    /// Listener proxy protocol.
     pub proxy_type: ProxyType,
+    /// Optional upstream proxy URL.
     pub upstream: Option<Url>,
+    /// Optional fakehttp AES encryption secret.
     pub aes_secret: Option<String>,
+    /// fakehttp maximum frame payload size in bytes.
     pub max_frame_size: usize,
+    /// Optional CA bundle for HTTPS upstream verification.
     pub upstream_ca: Option<PathBuf>,
+    /// Optional TLS certificate chain for HTTPS listener mode.
     pub tls_cert: Option<PathBuf>,
+    /// Optional TLS private key for HTTPS listener mode.
     pub tls_key: Option<PathBuf>,
 }
 
 impl Cli {
+    /// Convert parsed CLI flags into a normalized runtime configuration.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Parsed command-line options.
+    ///
+    /// # Returns
+    ///
+    /// Returns a [`Config`] with resolved listen address and byte-based frame
+    /// sizing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when HTTPS listener TLS files are incomplete, the listen
+    /// host cannot be resolved, or address resolution fails.
     pub async fn into_config(self) -> Result<Config> {
         if self.proxy_type == ProxyType::Https && self.tls_cert.is_none() {
             bail!("--type https requires --tls-cert and --tls-key")
