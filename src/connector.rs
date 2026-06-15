@@ -99,10 +99,19 @@ enum Upstream {
 pub struct Connector {
     upstream: Option<Upstream>,
     tls: Arc<ClientConfig>,
+    fakehttp_max_frame_size: usize,
 }
 
 impl Connector {
     pub fn new(url: Option<Url>, upstream_ca: Option<&Path>) -> Result<Self> {
+        Self::with_fakehttp_max_frame_size(url, upstream_ca, fakehttp::DEFAULT_MAX_FRAME_SIZE)
+    }
+
+    pub fn with_fakehttp_max_frame_size(
+        url: Option<Url>,
+        upstream_ca: Option<&Path>,
+        fakehttp_max_frame_size: usize,
+    ) -> Result<Self> {
         let upstream = url.map(parse_upstream).transpose()?;
         let mut roots = RootCertStore {
             roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
@@ -116,6 +125,7 @@ impl Connector {
         Ok(Self {
             upstream,
             tls: Arc::new(tls),
+            fakehttp_max_frame_size,
         })
     }
 
@@ -153,7 +163,14 @@ impl Connector {
                 aes_secret,
             }) => {
                 let stream: BoxStream = Box::new(connect_tcp(&endpoint.target).await?);
-                fakehttp::connect(stream, &endpoint.target, target, aes_secret.as_deref()).await
+                fakehttp::connect(
+                    stream,
+                    &endpoint.target,
+                    target,
+                    aes_secret.as_deref(),
+                    self.fakehttp_max_frame_size,
+                )
+                .await
             }
         }
     }

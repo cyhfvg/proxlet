@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -6,8 +5,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aes_gcm::aead::Aead;
-use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+use aes_gcm::aead::AeadInPlace;
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce, Tag};
 use anyhow::{Context as _, Result, bail};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -17,25 +16,33 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use crate::connector::{BoxStream, Connector, Target, relay};
 
 const MAX_HEADER_SIZE: usize = 64 * 1024;
-const MAX_FRAME_PLAINTEXT: usize = 16 * 1024;
-const MAX_FRAME_CIPHERTEXT: usize = MAX_FRAME_PLAINTEXT + TAG_SIZE;
+pub const DEFAULT_MAX_FRAME_SIZE: usize = 16 * 1024;
+const MAX_SUPPORTED_FRAME_SIZE: usize = 64 * 1024;
+const READ_CHUNK_SIZE: usize = 8192;
+const MAX_PENDING_OUTPUT_FRAMES: usize = 4;
 const TAG_SIZE: usize = 16;
 const NONCE_SIZE: usize = 12;
 const SALT_SIZE: usize = 16;
 const FRAME_HEADER_SIZE: usize = 4;
 const FAKEHTTP_PATH_PREFIX: &str = "/api/v1/stream/";
 const CRYPTO_ENCODING: &str = "aes-256-gcm";
+const MAX_FRAME_SIZE_HEADER: &str = "X-Proxlet-Max-Frame-Size";
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 pub async fn serve(
     mut client: BoxStream,
     connector: Arc<Connector>,
     aes_secret: Option<&str>,
+    max_frame_size: usize,
 ) -> Result<()> {
     let header = read_header(&mut client).await?;
     let request = Request::parse(&header)?;
     let target = request.target()?;
     let session = request.session()?;
+    let negotiated_frame_size = request
+        .max_frame_size()?
+        .unwrap_or(DEFAULT_MAX_FRAME_SIZE)
+        .min(normalize_max_frame_size(max_frame_size));
     let wants_crypto = request.wants_crypto();
     let crypto_secret = match (wants_crypto, aes_secret) {
         (true, Some(secret)) => Some(secret),
@@ -64,16 +71,22 @@ pub async fn serve(
         }
     };
 
-    client
-        .write_all(
-            b"HTTP/1.1 200 OK\r\n\
-              Content-Type: application/octet-stream\r\n\
-              Cache-Control: no-store\r\n\
-              Connection: keep-alive\r\n\r\n",
-        )
-        .await?;
+    let response = format!(
+        "HTTP/1.1 200 OK\r\n\
+         Content-Type: application/octet-stream\r\n\
+         Cache-Control: no-store\r\n\
+         {MAX_FRAME_SIZE_HEADER}: {negotiated_frame_size}\r\n\
+         Connection: keep-alive\r\n\r\n",
+    );
+    client.write_all(response.as_bytes()).await?;
     let client = match crypto_secret {
-        Some(secret) => encrypt_stream(client, secret, &session, CryptoRole::Server)?,
+        Some(secret) => encrypt_stream(
+            client,
+            secret,
+            &session,
+            CryptoRole::Server,
+            negotiated_frame_size,
+        )?,
         None => client,
     };
     relay(client, remote).await?;
@@ -85,26 +98,47 @@ pub async fn connect(
     endpoint: &Target,
     target: &Target,
     aes_secret: Option<&str>,
+    max_frame_size: usize,
 ) -> Result<BoxStream> {
+    let max_frame_size = normalize_max_frame_size(max_frame_size);
     let session = session_token(target);
-    let request = request_header(endpoint, target, aes_secret.is_some(), &session);
+    let request = request_header(
+        endpoint,
+        target,
+        aes_secret.is_some(),
+        &session,
+        max_frame_size,
+    );
     stream.write_all(request.as_bytes()).await?;
     stream.flush().await?;
     let header = read_header(&mut stream).await?;
-    let status = std::str::from_utf8(&header)?
-        .lines()
-        .next()
-        .unwrap_or_default();
-    if !status.contains(" 200 ") {
-        bail!("fakehttp upstream rejected tunnel: {status}")
+    let response = Response::parse(&header)?;
+    if !response.status.contains(" 200 ") {
+        bail!("fakehttp upstream rejected tunnel: {}", response.status)
     }
+    let negotiated_frame_size = response
+        .max_frame_size()?
+        .unwrap_or(DEFAULT_MAX_FRAME_SIZE)
+        .min(max_frame_size);
     match aes_secret {
-        Some(secret) => encrypt_stream(stream, secret, &session, CryptoRole::Client),
+        Some(secret) => encrypt_stream(
+            stream,
+            secret,
+            &session,
+            CryptoRole::Client,
+            negotiated_frame_size,
+        ),
         None => Ok(stream),
     }
 }
 
-fn request_header(endpoint: &Target, target: &Target, encrypted: bool, session: &str) -> String {
+fn request_header(
+    endpoint: &Target,
+    target: &Target,
+    encrypted: bool,
+    session: &str,
+    max_frame_size: usize,
+) -> String {
     let target_token = URL_SAFE_NO_PAD.encode(target.authority());
     let mut request = format!(
         "POST {FAKEHTTP_PATH_PREFIX}{session}/{target_token} HTTP/1.1\r\n\
@@ -118,6 +152,7 @@ fn request_header(endpoint: &Target, target: &Target, encrypted: bool, session: 
     if encrypted {
         request.push_str(&format!("Content-Encoding: {CRYPTO_ENCODING}\r\n"));
     }
+    request.push_str(&format!("{MAX_FRAME_SIZE_HEADER}: {max_frame_size}\r\n"));
     request.push_str("Connection: keep-alive\r\n\r\n");
     request
 }
@@ -218,6 +253,61 @@ impl Request {
                 && value.eq_ignore_ascii_case(CRYPTO_ENCODING)
         })
     }
+
+    fn max_frame_size(&self) -> Result<Option<usize>> {
+        parse_max_frame_size_header(&self.headers)
+    }
+}
+
+#[derive(Debug)]
+struct Response {
+    status: String,
+    headers: Vec<(String, String)>,
+}
+
+impl Response {
+    fn parse(bytes: &[u8]) -> Result<Self> {
+        let text = std::str::from_utf8(bytes)?;
+        let mut lines = text.trim_end_matches("\r\n\r\n").split("\r\n");
+        let status = lines
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("fakehttp response has no status line"))?;
+        let mut headers = Vec::new();
+        for line in lines {
+            let (name, value) = line
+                .split_once(':')
+                .ok_or_else(|| anyhow::anyhow!("invalid fakehttp response header line"))?;
+            headers.push((name.trim().to_owned(), value.trim().to_owned()));
+        }
+        Ok(Self {
+            status: status.to_owned(),
+            headers,
+        })
+    }
+
+    fn max_frame_size(&self) -> Result<Option<usize>> {
+        parse_max_frame_size_header(&self.headers)
+    }
+}
+
+fn parse_max_frame_size_header(headers: &[(String, String)]) -> Result<Option<usize>> {
+    headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(MAX_FRAME_SIZE_HEADER))
+        .map(|(_, value)| parse_max_frame_size(value))
+        .transpose()
+}
+
+fn parse_max_frame_size(value: &str) -> Result<usize> {
+    let size = value.parse::<usize>()?;
+    if !(8 * 1024..=MAX_SUPPORTED_FRAME_SIZE).contains(&size) {
+        bail!("fakehttp max frame size is out of range")
+    }
+    Ok(size)
+}
+
+fn normalize_max_frame_size(size: usize) -> usize {
+    size.clamp(8 * 1024, MAX_SUPPORTED_FRAME_SIZE)
 }
 
 fn parse_authority(authority: &str) -> Result<Target> {
@@ -252,21 +342,38 @@ fn encrypt_stream(
     secret: &str,
     session: &str,
     role: CryptoRole,
+    max_frame_size: usize,
 ) -> Result<BoxStream> {
-    Ok(Box::new(CryptoStream::new(stream, secret, session, role)?))
+    Ok(Box::new(CryptoStream::new(
+        stream,
+        secret,
+        session,
+        role,
+        max_frame_size,
+    )?))
 }
 
 struct CryptoStream {
     inner: BoxStream,
     read_cipher: CipherDirection,
     write_cipher: CipherDirection,
+    max_frame_size: usize,
     encrypted_in: Vec<u8>,
-    plaintext_in: VecDeque<u8>,
-    encrypted_out: VecDeque<u8>,
+    encrypted_in_start: usize,
+    plaintext_in: Vec<u8>,
+    plaintext_in_start: usize,
+    encrypted_out: Vec<u8>,
+    encrypted_out_start: usize,
 }
 
 impl CryptoStream {
-    fn new(inner: BoxStream, secret: &str, session: &str, role: CryptoRole) -> Result<Self> {
+    fn new(
+        inner: BoxStream,
+        secret: &str,
+        session: &str,
+        role: CryptoRole,
+        max_frame_size: usize,
+    ) -> Result<Self> {
         let (read_label, write_label) = match role {
             CryptoRole::Client => (
                 b"server-to-client".as_slice(),
@@ -277,83 +384,165 @@ impl CryptoStream {
                 b"server-to-client".as_slice(),
             ),
         };
+        let max_frame_size = normalize_max_frame_size(max_frame_size);
         Ok(Self {
             inner,
             read_cipher: CipherDirection::new(secret, session, read_label)?,
             write_cipher: CipherDirection::new(secret, session, write_label)?,
-            encrypted_in: Vec::with_capacity(MAX_FRAME_CIPHERTEXT + FRAME_HEADER_SIZE),
-            plaintext_in: VecDeque::with_capacity(MAX_FRAME_PLAINTEXT),
-            encrypted_out: VecDeque::with_capacity(MAX_FRAME_CIPHERTEXT + FRAME_HEADER_SIZE),
+            max_frame_size,
+            encrypted_in: Vec::with_capacity(max_frame_size + TAG_SIZE + FRAME_HEADER_SIZE),
+            encrypted_in_start: 0,
+            plaintext_in: Vec::with_capacity(max_frame_size),
+            plaintext_in_start: 0,
+            encrypted_out: Vec::with_capacity(max_frame_size + TAG_SIZE + FRAME_HEADER_SIZE),
+            encrypted_out_start: 0,
         })
+    }
+
+    fn pending_encrypted_out(&self) -> usize {
+        self.encrypted_out.len() - self.encrypted_out_start
+    }
+
+    fn poll_write_pending_once(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<io::Result<()>> {
+        if self.encrypted_out_start >= self.encrypted_out.len() {
+            self.compact_encrypted_out();
+            return Poll::Ready(Ok(()));
+        }
+        let this = self.as_mut().get_mut();
+        let pending = &this.encrypted_out[this.encrypted_out_start..];
+        let written = match Pin::new(&mut this.inner).poll_write(context, pending) {
+            Poll::Ready(Ok(0)) => {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "fakehttp encrypted stream write returned zero",
+                )));
+            }
+            Poll::Ready(Ok(written)) => written,
+            Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+            Poll::Pending => return Poll::Pending,
+        };
+        self.encrypted_out_start += written;
+        self.compact_encrypted_out();
+        Poll::Ready(Ok(()))
     }
 
     fn poll_flush_pending(
         mut self: Pin<&mut Self>,
         context: &mut Context<'_>,
     ) -> Poll<io::Result<()>> {
-        while !self.encrypted_out.is_empty() {
-            let chunk_len = self.encrypted_out.len().min(8192);
-            let chunk = self
-                .encrypted_out
-                .iter()
-                .take(chunk_len)
-                .copied()
-                .collect::<Vec<_>>();
-            let written = match Pin::new(&mut self.inner).poll_write(context, &chunk) {
-                Poll::Ready(Ok(0)) => {
-                    return Poll::Ready(Err(io::Error::new(
-                        io::ErrorKind::WriteZero,
-                        "fakehttp encrypted stream write returned zero",
-                    )));
-                }
-                Poll::Ready(Ok(written)) => written,
-                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
-                Poll::Pending => return Poll::Pending,
-            };
-            self.encrypted_out.drain(..written);
+        while self.encrypted_out_start < self.encrypted_out.len() {
+            match self.as_mut().poll_write_pending_once(context) {
+                Poll::Ready(Ok(())) => {}
+                other => return other,
+            }
         }
         Poll::Ready(Ok(()))
     }
 
     fn try_decrypt_frame(&mut self) -> io::Result<bool> {
-        if self.encrypted_in.len() < FRAME_HEADER_SIZE {
+        let available = self.encrypted_in.len() - self.encrypted_in_start;
+        if available < FRAME_HEADER_SIZE {
             return Ok(false);
         }
+        let header_start = self.encrypted_in_start;
         let len = u32::from_be_bytes([
-            self.encrypted_in[0],
-            self.encrypted_in[1],
-            self.encrypted_in[2],
-            self.encrypted_in[3],
+            self.encrypted_in[header_start],
+            self.encrypted_in[header_start + 1],
+            self.encrypted_in[header_start + 2],
+            self.encrypted_in[header_start + 3],
         ]) as usize;
-        if !(TAG_SIZE..=MAX_FRAME_CIPHERTEXT).contains(&len) {
+        if !(TAG_SIZE..=self.max_frame_size + TAG_SIZE).contains(&len) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "invalid fakehttp encrypted frame length",
             ));
         }
         let frame_len = FRAME_HEADER_SIZE + len;
-        if self.encrypted_in.len() < frame_len {
+        if available < frame_len {
             return Ok(false);
         }
-        let ciphertext = self.encrypted_in[FRAME_HEADER_SIZE..frame_len].to_vec();
-        self.encrypted_in.drain(..frame_len);
-        let plaintext = self.read_cipher.decrypt(&ciphertext)?;
-        self.plaintext_in.extend(plaintext);
+        let ciphertext_start = header_start + FRAME_HEADER_SIZE;
+        let frame_end = ciphertext_start + len;
+        let plaintext_len = len - TAG_SIZE;
+        {
+            let frame = &mut self.encrypted_in[ciphertext_start..frame_end];
+            let (ciphertext, tag_bytes) = frame.split_at_mut(plaintext_len);
+            let tag = Tag::from_slice(tag_bytes);
+            self.read_cipher.decrypt_in_place(ciphertext, tag)?;
+        }
+        self.plaintext_in.extend_from_slice(
+            &self.encrypted_in[ciphertext_start..ciphertext_start + plaintext_len],
+        );
+        self.encrypted_in_start = frame_end;
+        self.compact_encrypted_in();
         Ok(true)
     }
 
     fn queue_encrypted(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let count = bytes.len().min(MAX_FRAME_PLAINTEXT);
-        let ciphertext = self.write_cipher.encrypt(&bytes[..count])?;
-        let frame_len = u32::try_from(ciphertext.len()).map_err(|_| {
+        let count = bytes.len().min(self.max_frame_size);
+        let frame_len = u32::try_from(count + TAG_SIZE).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 "fakehttp encrypted frame is too large",
             )
         })?;
         self.encrypted_out.extend(frame_len.to_be_bytes());
-        self.encrypted_out.extend(ciphertext);
+        let plaintext_start = self.encrypted_out.len();
+        self.encrypted_out.extend_from_slice(&bytes[..count]);
+        let tag = self
+            .write_cipher
+            .encrypt_in_place(&mut self.encrypted_out[plaintext_start..plaintext_start + count])?;
+        self.encrypted_out.extend_from_slice(&tag);
         Ok(count)
+    }
+
+    fn read_plaintext_into(&mut self, buffer: &mut ReadBuf<'_>) -> bool {
+        if self.plaintext_in_start >= self.plaintext_in.len() {
+            self.clear_plaintext_in();
+            return false;
+        }
+        let available = &self.plaintext_in[self.plaintext_in_start..];
+        let count = available.len().min(buffer.remaining());
+        buffer.put_slice(&available[..count]);
+        self.plaintext_in_start += count;
+        self.clear_plaintext_in();
+        count > 0
+    }
+
+    fn compact_encrypted_in(&mut self) {
+        if self.encrypted_in_start == 0 {
+            return;
+        }
+        if self.encrypted_in_start >= self.encrypted_in.len() {
+            self.encrypted_in.clear();
+            self.encrypted_in_start = 0;
+        } else if self.encrypted_in_start >= self.max_frame_size {
+            self.encrypted_in.drain(..self.encrypted_in_start);
+            self.encrypted_in_start = 0;
+        }
+    }
+
+    fn compact_encrypted_out(&mut self) {
+        if self.encrypted_out_start == 0 {
+            return;
+        }
+        if self.encrypted_out_start >= self.encrypted_out.len() {
+            self.encrypted_out.clear();
+            self.encrypted_out_start = 0;
+        } else if self.encrypted_out_start >= self.max_frame_size {
+            self.encrypted_out.drain(..self.encrypted_out_start);
+            self.encrypted_out_start = 0;
+        }
+    }
+
+    fn clear_plaintext_in(&mut self) {
+        if self.plaintext_in_start >= self.plaintext_in.len() {
+            self.plaintext_in.clear();
+            self.plaintext_in_start = 0;
+        }
     }
 }
 
@@ -365,12 +554,7 @@ impl AsyncRead for CryptoStream {
     ) -> Poll<io::Result<()>> {
         let filled_before = buffer.filled().len();
         loop {
-            while buffer.remaining() > 0 {
-                let Some(byte) = self.plaintext_in.pop_front() else {
-                    break;
-                };
-                buffer.put_slice(&[byte]);
-            }
+            self.read_plaintext_into(buffer);
             if buffer.filled().len() > filled_before {
                 return Poll::Ready(Ok(()));
             }
@@ -378,7 +562,7 @@ impl AsyncRead for CryptoStream {
                 continue;
             }
 
-            let mut scratch = [0_u8; 8192];
+            let mut scratch = [0_u8; READ_CHUNK_SIZE];
             let mut read_buffer = ReadBuf::new(&mut scratch);
             let result = Pin::new(&mut self.inner).poll_read(context, &mut read_buffer);
             let filled = read_buffer.filled().len();
@@ -414,16 +598,20 @@ impl AsyncWrite for CryptoStream {
         if bytes.is_empty() {
             return Poll::Ready(Ok(0));
         }
-        match self.as_mut().poll_flush_pending(context) {
-            Poll::Ready(Ok(())) => {}
-            Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
-            Poll::Pending => return Poll::Pending,
+        if self.pending_encrypted_out()
+            >= self.max_frame_size * MAX_PENDING_OUTPUT_FRAMES + TAG_SIZE
+        {
+            match self.as_mut().poll_flush_pending(context) {
+                Poll::Ready(Ok(())) => {}
+                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                Poll::Pending => return Poll::Pending,
+            }
         }
         let accepted = match self.queue_encrypted(bytes) {
             Ok(accepted) => accepted,
             Err(error) => return Poll::Ready(Err(error)),
         };
-        match self.as_mut().poll_flush_pending(context) {
+        match self.as_mut().poll_write_pending_once(context) {
             Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
             Poll::Ready(Ok(())) | Poll::Pending => Poll::Ready(Ok(accepted)),
         }
@@ -463,17 +651,17 @@ impl CipherDirection {
         })
     }
 
-    fn encrypt(&mut self, plaintext: &[u8]) -> io::Result<Vec<u8>> {
+    fn encrypt_in_place(&mut self, plaintext: &mut [u8]) -> io::Result<Tag> {
         let nonce = self.next_nonce()?;
         self.cipher
-            .encrypt(Nonce::from_slice(&nonce), plaintext)
+            .encrypt_in_place_detached(Nonce::from_slice(&nonce), b"", plaintext)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "fakehttp encryption failed"))
     }
 
-    fn decrypt(&mut self, ciphertext: &[u8]) -> io::Result<Vec<u8>> {
+    fn decrypt_in_place(&mut self, ciphertext: &mut [u8], tag: &Tag) -> io::Result<()> {
         let nonce = self.next_nonce()?;
         self.cipher
-            .decrypt(Nonce::from_slice(&nonce), ciphertext)
+            .decrypt_in_place_detached(Nonce::from_slice(&nonce), b"", ciphertext, tag)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "fakehttp decryption failed"))
     }
 
@@ -569,10 +757,22 @@ mod tests {
     #[tokio::test]
     async fn encrypted_stream_round_trips() {
         let (client, server) = tokio::io::duplex(4096);
-        let mut client = encrypt_stream(Box::new(client), "secret", "session", CryptoRole::Client)
-            .expect("client stream");
-        let mut server = encrypt_stream(Box::new(server), "secret", "session", CryptoRole::Server)
-            .expect("server stream");
+        let mut client = encrypt_stream(
+            Box::new(client),
+            "secret",
+            "session",
+            CryptoRole::Client,
+            DEFAULT_MAX_FRAME_SIZE,
+        )
+        .expect("client stream");
+        let mut server = encrypt_stream(
+            Box::new(server),
+            "secret",
+            "session",
+            CryptoRole::Server,
+            DEFAULT_MAX_FRAME_SIZE,
+        )
+        .expect("server stream");
 
         client.write_all(b"hello").await.expect("client write");
         client.flush().await.expect("client flush");
@@ -585,5 +785,34 @@ mod tests {
         let mut output = [0_u8; 5];
         client.read_exact(&mut output).await.expect("client read");
         assert_eq!(&output, b"world");
+    }
+
+    #[tokio::test]
+    async fn encrypted_stream_round_trips_with_large_frame_size() {
+        let (client, server) = tokio::io::duplex(128 * 1024);
+        let mut client = encrypt_stream(
+            Box::new(client),
+            "secret",
+            "session",
+            CryptoRole::Client,
+            64 * 1024,
+        )
+        .expect("client stream");
+        let mut server = encrypt_stream(
+            Box::new(server),
+            "secret",
+            "session",
+            CryptoRole::Server,
+            64 * 1024,
+        )
+        .expect("server stream");
+        let input = vec![7_u8; 48 * 1024];
+
+        client.write_all(&input).await.expect("client write");
+        client.flush().await.expect("client flush");
+        let mut output = vec![0_u8; input.len()];
+        server.read_exact(&mut output).await.expect("server read");
+
+        assert_eq!(output, input);
     }
 }

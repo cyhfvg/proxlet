@@ -281,6 +281,7 @@ async fn start_proxlet_with_aes_secret(
         proxy_type,
         proxy: upstream,
         aes_secret,
+        max_frame_size: 16,
         proxy_ca: None,
         tls_cert,
         tls_key,

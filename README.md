@@ -111,6 +111,10 @@ With `--aes-secret`, fakehttp tunnel payloads are framed and encrypted with
 AES-256-GCM. Key material, salt, nonce bases, and per-frame nonces are derived
 deterministically from the secret plus the session token carried in the HTTP
 wrapper, so the downstream URL only needs the same secret value.
+Use `--max-frame-size <KB>` to choose the encrypted frame payload size. Allowed
+values are `8`, `16`, `32`, and `64`; the default is `16`. When two proxlet
+instances use different values, fakehttp negotiates the smaller value for that
+connection.
 
 To chain two `proxlet` instances through an HTTPS proxy, start the upstream
 instance with its certificate, then provide its CA certificate to the
@@ -219,6 +223,7 @@ Stop-Process -Id <PID> -Force
 | `-t, --type <type>` | Proxy type, default: `http` |
 | `--proxy <SCHEMA_URL>` | Upstream proxy URL |
 | `--aes-secret <SECRET>` | AES secret for encrypted fakehttp listener mode |
+| `--max-frame-size <KB>` | fakehttp encrypted frame payload size in KiB: `8`, `16`, `32`, or `64`; default: `16` |
 | `--proxy-ca <FILE>` | CA certificate bundle for an HTTPS upstream proxy |
 | `--tls-cert <FILE>` | Certificate file for HTTPS mode |
 | `--tls-key <FILE>` | Private key file for HTTPS mode |

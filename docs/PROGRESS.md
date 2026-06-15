@@ -37,6 +37,8 @@ Last updated: 2026-06-03
   as private key passphrases when a key is provided.
 - Added `fakehttp` listener and upstream chaining mode, with optional
   AES-256-GCM framing through `--aes-secret` and `fakehttp://secret@host:port`.
+- Added `--max-frame-size <KB>` for fakehttp encrypted frame sizing, with
+  connection-level negotiation to the smaller endpoint value.
 - Selected Rust-native networking APIs (`rustls` and `russh`) so distributed
   binaries do not depend on OpenSSL or a system `libssl` shared library.
 - Added unit and asynchronous relay-path tests for command parsing, HTTP

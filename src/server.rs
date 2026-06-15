@@ -16,9 +16,10 @@ use crate::{fakehttp, http, socks};
 
 pub async fn run(cli: Cli) -> Result<()> {
     let config = Arc::new(cli.into_config().await?);
-    let connector = Arc::new(Connector::new(
+    let connector = Arc::new(Connector::with_fakehttp_max_frame_size(
         config.upstream.clone(),
         config.upstream_ca.as_deref(),
+        config.max_frame_size,
     )?);
     let tls = load_tls(&config)?;
     let listener = TcpListener::bind(config.listen)
@@ -75,7 +76,13 @@ async fn serve_client(
         }
         ProxyType::Mixed => serve_mixed(stream, connector, config.auth.as_ref(), tls).await,
         ProxyType::FakeHttp => {
-            fakehttp::serve(Box::new(stream), connector, config.aes_secret.as_deref()).await
+            fakehttp::serve(
+                Box::new(stream),
+                connector,
+                config.aes_secret.as_deref(),
+                config.max_frame_size,
+            )
+            .await
         }
     }
 }

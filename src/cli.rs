@@ -7,6 +7,9 @@ use clap::{Parser, ValueEnum};
 use ipnet::IpNet;
 use url::Url;
 
+const DEFAULT_MAX_FRAME_SIZE_KIB: usize = 16;
+const MAX_FRAME_SIZE_VALUES_KIB: [usize; 4] = [8, 16, 32, 64];
+
 /// Start a portable proxy server with optional upstream proxy chaining.
 #[derive(Clone, Debug, Parser)]
 #[command(name = "proxlet", version, about)]
@@ -56,6 +59,15 @@ pub struct Cli {
     #[arg(long, value_name = "SECRET")]
     pub aes_secret: Option<String>,
 
+    /// Maximum fakehttp encrypted frame payload size in KiB.
+    #[arg(
+        long,
+        value_name = "KB",
+        default_value_t = DEFAULT_MAX_FRAME_SIZE_KIB,
+        value_parser = parse_max_frame_size
+    )]
+    pub max_frame_size: usize,
+
     /// PEM CA certificate bundle used to verify an HTTPS upstream proxy.
     #[arg(long, value_name = "FILE", requires = "proxy")]
     pub proxy_ca: Option<PathBuf>,
@@ -90,6 +102,17 @@ impl std::fmt::Display for ProxyType {
             Self::Mixed => "mixed",
             Self::FakeHttp => "fakehttp",
         })
+    }
+}
+
+fn parse_max_frame_size(value: &str) -> std::result::Result<usize, String> {
+    let size = value
+        .parse::<usize>()
+        .map_err(|_| format!("invalid max frame size: {value}"))?;
+    if MAX_FRAME_SIZE_VALUES_KIB.contains(&size) {
+        Ok(size)
+    } else {
+        Err("max frame size must be one of 8, 16, 32, or 64".to_owned())
     }
 }
 
@@ -136,6 +159,7 @@ pub struct Config {
     pub proxy_type: ProxyType,
     pub upstream: Option<Url>,
     pub aes_secret: Option<String>,
+    pub max_frame_size: usize,
     pub upstream_ca: Option<PathBuf>,
     pub tls_cert: Option<PathBuf>,
     pub tls_key: Option<PathBuf>,
@@ -161,6 +185,7 @@ impl Cli {
             proxy_type: self.proxy_type,
             upstream: self.proxy,
             aes_secret: self.aes_secret,
+            max_frame_size: self.max_frame_size * 1024,
             upstream_ca: self.proxy_ca,
             tls_cert: self.tls_cert,
             tls_key: self.tls_key,
@@ -191,6 +216,8 @@ mod tests {
             "socks5h://user:pass@127.0.0.1:1080",
             "--aes-secret",
             "fake-secret",
+            "--max-frame-size",
+            "32",
             "--proxy-ca",
             "certs/proxlet-ca.pem",
         ])
@@ -207,6 +234,7 @@ mod tests {
         );
         assert_eq!(cli.proxy.expect("upstream").scheme(), "socks5h");
         assert_eq!(cli.aes_secret.as_deref(), Some("fake-secret"));
+        assert_eq!(cli.max_frame_size, 32);
         assert_eq!(
             cli.proxy_ca.expect("proxy CA"),
             PathBuf::from("certs/proxlet-ca.pem")
@@ -233,6 +261,15 @@ mod tests {
         let cli = Cli::try_parse_from(["proxlet", "-t", "fakehttp"]).expect("fakehttp type");
 
         assert_eq!(cli.proxy_type, ProxyType::FakeHttp);
+    }
+
+    #[test]
+    fn validates_max_frame_size_values() {
+        let cli = Cli::try_parse_from(["proxlet", "--max-frame-size", "64"])
+            .expect("valid max frame size");
+
+        assert_eq!(cli.max_frame_size, 64);
+        assert!(Cli::try_parse_from(["proxlet", "--max-frame-size", "12"]).is_err());
     }
 
     #[test]

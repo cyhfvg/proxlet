@@ -108,6 +108,9 @@ proxlet --lhost 127.0.0.1 --lport 9090 --type http \
 指定 `--aes-secret` 后，fakehttp tunnel 内的 payload 会按帧使用 AES-256-GCM
 加密。密钥材料、salt、nonce base 与每帧 nonce 都由 secret 和 HTTP 外壳里的
 session token 按固定算法派生，因此下游 URL 只需要提供相同的 secret 即可解密。
+可使用 `--max-frame-size <KB>` 设置加密帧 payload 大小，可选值为 `8`、`16`、
+`32`、`64`，默认值为 `16`。当两个 proxlet 设置不同值时，fakehttp 会为该连接
+协商使用较小值。
 
 若需要通过 HTTPS 代理连接两个 `proxlet` 实例，请先使用证书启动上游实例，
 再将上游实例的 CA 证书提供给下游实例：
@@ -215,6 +218,7 @@ Stop-Process -Id <PID> -Force
 | `-t, --type <type>` | 代理类型，默认值：`http` |
 | `--proxy <SCHEMA_URL>` | 上游代理 URL |
 | `--aes-secret <SECRET>` | fakehttp 监听模式使用的 AES 加密 secret |
+| `--max-frame-size <KB>` | fakehttp 加密帧 payload 大小，单位 KiB，可选 `8`、`16`、`32`、`64`，默认值：`16` |
 | `--proxy-ca <FILE>` | 用于验证 HTTPS 上游代理的 CA 证书包 |
 | `--tls-cert <FILE>` | HTTPS 模式使用的证书文件 |
 | `--tls-key <FILE>` | HTTPS 模式使用的私钥文件 |
