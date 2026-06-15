@@ -48,9 +48,13 @@ pub struct Cli {
     #[arg(
         long,
         value_name = "SCHEMA_URL",
-        help = "Chain traffic through an upstream proxy URL. Examples: http://user:pass@host:8080, https://user:pass@host:8443, socks5://user:pass@host:1080, ssh://user:pass@host:22, ssh://user@host:22?key=/path/to/id_rsa"
+        help = "Chain traffic through an upstream proxy URL. Examples: http://user:pass@host:8080, https://user:pass@host:8443, socks5://user:pass@host:1080, fakehttp://secret@host:8080, ssh://user:pass@host:22, ssh://user@host:22?key=/path/to/id_rsa"
     )]
     pub proxy: Option<Url>,
+
+    /// AES secret for fakehttp listener encryption.
+    #[arg(long, value_name = "SECRET")]
+    pub aes_secret: Option<String>,
 
     /// PEM CA certificate bundle used to verify an HTTPS upstream proxy.
     #[arg(long, value_name = "FILE", requires = "proxy")]
@@ -72,6 +76,8 @@ pub enum ProxyType {
     Socks5,
     Socks5h,
     Mixed,
+    #[value(name = "fakehttp")]
+    FakeHttp,
 }
 
 impl std::fmt::Display for ProxyType {
@@ -82,6 +88,7 @@ impl std::fmt::Display for ProxyType {
             Self::Socks5 => "socks5",
             Self::Socks5h => "socks5h",
             Self::Mixed => "mixed",
+            Self::FakeHttp => "fakehttp",
         })
     }
 }
@@ -128,6 +135,7 @@ pub struct Config {
     pub auth: Option<Auth>,
     pub proxy_type: ProxyType,
     pub upstream: Option<Url>,
+    pub aes_secret: Option<String>,
     pub upstream_ca: Option<PathBuf>,
     pub tls_cert: Option<PathBuf>,
     pub tls_key: Option<PathBuf>,
@@ -152,6 +160,7 @@ impl Cli {
             auth,
             proxy_type: self.proxy_type,
             upstream: self.proxy,
+            aes_secret: self.aes_secret,
             upstream_ca: self.proxy_ca,
             tls_cert: self.tls_cert,
             tls_key: self.tls_key,
@@ -180,6 +189,8 @@ mod tests {
             "127.0.0.1/8",
             "--proxy",
             "socks5h://user:pass@127.0.0.1:1080",
+            "--aes-secret",
+            "fake-secret",
             "--proxy-ca",
             "certs/proxlet-ca.pem",
         ])
@@ -195,6 +206,7 @@ mod tests {
                 .any(|allowed| allowed.contains(&"127.0.0.2".parse().expect("IP")))
         );
         assert_eq!(cli.proxy.expect("upstream").scheme(), "socks5h");
+        assert_eq!(cli.aes_secret.as_deref(), Some("fake-secret"));
         assert_eq!(
             cli.proxy_ca.expect("proxy CA"),
             PathBuf::from("certs/proxlet-ca.pem")
@@ -217,6 +229,13 @@ mod tests {
     }
 
     #[test]
+    fn parses_fakehttp_proxy_type() {
+        let cli = Cli::try_parse_from(["proxlet", "-t", "fakehttp"]).expect("fakehttp type");
+
+        assert_eq!(cli.proxy_type, ProxyType::FakeHttp);
+    }
+
+    #[test]
     fn proxy_help_includes_uri_examples() {
         let mut help = Vec::new();
         Cli::command().write_help(&mut help).expect("help renders");
@@ -225,6 +244,7 @@ mod tests {
         assert!(help.contains("http://user:pass@host:8080"));
         assert!(help.contains("https://user:pass@host:8443"));
         assert!(help.contains("socks5://user:pass@host:1080"));
+        assert!(help.contains("fakehttp://secret@host:8080"));
         assert!(help.contains("ssh://user:pass@host:22"));
         assert!(help.contains("ssh://user@host:22?key=/path/to/id_rsa"));
     }

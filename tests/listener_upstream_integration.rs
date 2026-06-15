@@ -96,6 +96,26 @@ async fn chains_through_live_socks5h_upstream_proxy() -> Result<()> {
 }
 
 #[tokio::test]
+async fn chains_through_live_encrypted_fakehttp_upstream_proxy() -> Result<()> {
+    let origin = start_origin("FAKEHTTP").await?;
+    let upstream =
+        start_proxlet_with_aes_secret(ProxyType::FakeHttp, None, None, Some(PASSWORD.to_owned()))
+            .await?;
+    let proxlet = start_proxlet(
+        ProxyType::Http,
+        Some(fakehttp_upstream_url(upstream.addr, PASSWORD)?),
+        None,
+    )
+    .await?;
+
+    let response = proxy_get_plain(proxlet.addr, "localhost", origin.addr.port()).await?;
+
+    assert_response_body(&response, "FAKEHTTP");
+    origin.task.await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn socks5h_upstream_authentication_failure_returns_bad_gateway() -> Result<()> {
     let upstream = start_socks5h_upstream().await?;
     let proxlet = start_proxlet(
@@ -238,6 +258,15 @@ async fn start_proxlet(
     upstream: Option<Url>,
     tls: Option<(PathBuf, PathBuf)>,
 ) -> Result<RunningProxlet> {
+    start_proxlet_with_aes_secret(proxy_type, upstream, tls, None).await
+}
+
+async fn start_proxlet_with_aes_secret(
+    proxy_type: ProxyType,
+    upstream: Option<Url>,
+    tls: Option<(PathBuf, PathBuf)>,
+    aes_secret: Option<String>,
+) -> Result<RunningProxlet> {
     let addr = unused_addr()?;
     let (tls_cert, tls_key) = tls
         .map(|(cert, key)| (Some(cert), Some(key)))
@@ -251,6 +280,7 @@ async fn start_proxlet(
         username: None,
         proxy_type,
         proxy: upstream,
+        aes_secret,
         proxy_ca: None,
         tls_cert,
         tls_key,
@@ -607,6 +637,13 @@ fn assert_response_body(response: &[u8], body: &str) {
 fn upstream_url(scheme: &str, addr: SocketAddr, username: &str, password: &str) -> Result<Url> {
     Ok(Url::parse(&format!(
         "{scheme}://{username}:{password}@127.0.0.1:{}",
+        addr.port()
+    ))?)
+}
+
+fn fakehttp_upstream_url(addr: SocketAddr, aes_secret: &str) -> Result<Url> {
+    Ok(Url::parse(&format!(
+        "fakehttp://{aes_secret}@127.0.0.1:{}",
         addr.port()
     ))?)
 }

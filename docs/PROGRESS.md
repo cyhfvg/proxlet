@@ -7,8 +7,8 @@ Last updated: 2026-06-03
 - Added an English command-line interface with `--allow-ip`, `--lhost`,
   `--lport`, `--user`, `--auth`, `--type`, `--proxy`, `--proxy-ca`, and
   `--daemon`.
-- Added `--type` values `http`, `https`, `socks5`, `socks5h`, and `mixed`;
-  the default is `http`.
+- Added `--type` values `http`, `https`, `socks5`, `socks5h`, `mixed`, and
+  `fakehttp`; the default is `http`.
 - Implemented HTTP forward proxy requests and HTTP `CONNECT` tunnels.
 - Implemented TLS-wrapped HTTPS proxy listener mode through
   `--tls-cert <FILE> --tls-key <FILE>`.
@@ -23,8 +23,8 @@ Last updated: 2026-06-03
 - Implemented optional client access controls: source IP allowlisting with
   single IP, comma-separated IP, and CIDR forms; HTTP Basic proxy
   authentication; and SOCKS5 username/password authentication.
-- Implemented upstream chaining for `http://`, `https://`, `socks5://`, and
-  `socks5h://` URLs.
+- Implemented upstream chaining for `http://`, `https://`, `socks5://`,
+  `socks5h://`, and `fakehttp://` URLs.
 - Added `--proxy-ca <FILE>` so a proxlet instance can trust a private CA when
   chaining through another proxlet HTTPS proxy.
 - Added `--daemon` background mode with detached standard streams and printed
@@ -35,6 +35,8 @@ Last updated: 2026-06-03
 - Added SSH upstream private-key authentication with
   `ssh://username@host:port?key=/path/to/private_key`; URL passwords are used
   as private key passphrases when a key is provided.
+- Added `fakehttp` listener and upstream chaining mode, with optional
+  AES-256-GCM framing through `--aes-secret` and `fakehttp://secret@host:port`.
 - Selected Rust-native networking APIs (`rustls` and `russh`) so distributed
   binaries do not depend on OpenSSL or a system `libssl` shared library.
 - Added unit and asynchronous relay-path tests for command parsing, HTTP
@@ -44,6 +46,7 @@ Last updated: 2026-06-03
   authentication failure coverage.
 - Added live SSH upstream integration coverage for private-key authentication
   success and failure.
+- Added live encrypted fakehttp upstream integration coverage.
 
 ## Operation Notes
 
@@ -57,3 +60,7 @@ Last updated: 2026-06-03
   matching the requested CLI behavior.
 - SSH upstream mode accepts server host keys directly and does not read or
   write `known_hosts`.
+- fakehttp mode uses an HTTP/1.1-looking handshake followed by a proxlet-specific
+  bidirectional tunnel on the same TCP connection; encrypted sessions bind
+  AES-GCM derivation to the handshake session token to avoid nonce reuse across
+  connections.

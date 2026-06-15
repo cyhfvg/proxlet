@@ -7,9 +7,10 @@ proxy endpoint and optionally routing traffic through an upstream proxy.
 
 ## Features
 
-- Supports HTTP, HTTPS, SOCKS5, and SOCKS5h proxy clients.
+- Supports HTTP, HTTPS, SOCKS5, SOCKS5h, and fakehttp proxy clients.
 - Provides mixed mode for HTTP and SOCKS5 clients on the same port.
-- Supports upstream proxy chaining with HTTP, HTTPS, SOCKS5, SOCKS5h, and SSH.
+- Supports upstream proxy chaining with HTTP, HTTPS, SOCKS5, SOCKS5h, fakehttp,
+  and SSH.
 - Provides username/password authentication and source IP allowlists.
 - Runs in the background with a built-in daemon option.
 - Ships as a single executable for easy deployment.
@@ -56,10 +57,11 @@ proxlet --type http
 proxlet --type socks5
 proxlet --type socks5h
 proxlet --type mixed
+proxlet --type fakehttp
 ```
 
-Available types are `http`, `https`, `socks5`, `socks5h`, and `mixed`.
-The default is `http`.
+Available types are `http`, `https`, `socks5`, `socks5h`, `mixed`, and
+`fakehttp`. The default is `http`.
 
 ### Create certificate files for HTTPS mode
 
@@ -81,6 +83,7 @@ the proxy's hostname or IP address when generating files for another host:
 
 ```bash
 proxlet --proxy 'socks5h://username:password@127.0.0.1:1080'
+proxlet --proxy 'fakehttp://strong-password@127.0.0.1:8080'
 proxlet --proxy 'ssh://username:password@127.0.0.1:22'
 proxlet --proxy 'ssh://username@127.0.0.1:22?key=/home/username/.ssh/id_ed25519'
 ```
@@ -89,6 +92,25 @@ For SSH upstreams, use `ssh://username:password@host:port` for password
 authentication or add `?key=/path/to/private_key` for public-key
 authentication. When both a password and `key` are present, the password is
 used as the private key passphrase.
+
+For fakehttp chaining, run one upstream `proxlet` in fakehttp mode and point a
+downstream `proxlet` at it. The downstream listener still exposes a normal
+local proxy protocol, such as HTTP, for browsers and applications:
+
+```bash
+# On the upstream host
+proxlet --lhost 10.10.50.20 --lport 8080 --type fakehttp \
+  --aes-secret 'strong-password123'
+
+# On the downstream host
+proxlet --lhost 127.0.0.1 --lport 9090 --type http \
+  --proxy 'fakehttp://strong-password123@10.10.50.20:8080'
+```
+
+With `--aes-secret`, fakehttp tunnel payloads are framed and encrypted with
+AES-256-GCM. Key material, salt, nonce bases, and per-frame nonces are derived
+deterministically from the secret plus the session token carried in the HTTP
+wrapper, so the downstream URL only needs the same secret value.
 
 To chain two `proxlet` instances through an HTTPS proxy, start the upstream
 instance with its certificate, then provide its CA certificate to the
@@ -196,6 +218,7 @@ Stop-Process -Id <PID> -Force
 | `-a, --auth <password>` | Authentication password |
 | `-t, --type <type>` | Proxy type, default: `http` |
 | `--proxy <SCHEMA_URL>` | Upstream proxy URL |
+| `--aes-secret <SECRET>` | AES secret for encrypted fakehttp listener mode |
 | `--proxy-ca <FILE>` | CA certificate bundle for an HTTPS upstream proxy |
 | `--tls-cert <FILE>` | Certificate file for HTTPS mode |
 | `--tls-key <FILE>` | Private key file for HTTPS mode |

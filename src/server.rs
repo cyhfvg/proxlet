@@ -12,7 +12,7 @@ use tokio_rustls::rustls::ServerConfig;
 
 use crate::cli::{Cli, Config, ProxyType};
 use crate::connector::Connector;
-use crate::{http, socks};
+use crate::{fakehttp, http, socks};
 
 pub async fn run(cli: Cli) -> Result<()> {
     let config = Arc::new(cli.into_config().await?);
@@ -74,6 +74,9 @@ async fn serve_client(
             socks::serve(Box::new(stream), None, connector, config.auth.as_ref()).await
         }
         ProxyType::Mixed => serve_mixed(stream, connector, config.auth.as_ref(), tls).await,
+        ProxyType::FakeHttp => {
+            fakehttp::serve(Box::new(stream), connector, config.aes_secret.as_deref()).await
+        }
     }
 }
 

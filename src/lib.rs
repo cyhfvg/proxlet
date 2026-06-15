@@ -1,6 +1,7 @@
 pub mod cli;
 pub mod connector;
 pub mod daemon;
+pub mod fakehttp;
 pub mod http;
 pub mod server;
 pub mod socks;

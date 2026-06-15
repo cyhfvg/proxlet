@@ -7,9 +7,9 @@
 
 ## 特性
 
-- 支持 HTTP、HTTPS、SOCKS5 与 SOCKS5h 代理客户端。
+- 支持 HTTP、HTTPS、SOCKS5、SOCKS5h 与 fakehttp 代理客户端。
 - 提供混合模式，可在同一端口接收 HTTP 与 SOCKS5 客户端连接。
-- 支持通过 HTTP、HTTPS、SOCKS5、SOCKS5h 与 SSH 进行代理链转发。
+- 支持通过 HTTP、HTTPS、SOCKS5、SOCKS5h、fakehttp 与 SSH 进行代理链转发。
 - 提供用户名/密码认证与来源 IP 白名单。
 - 通过内置 daemon 参数在后台运行。
 - 以单个可执行文件发布，便于部署。
@@ -56,9 +56,10 @@ proxlet --type http
 proxlet --type socks5
 proxlet --type socks5h
 proxlet --type mixed
+proxlet --type fakehttp
 ```
 
-可选类型包括 `http`、`https`、`socks5`、`socks5h` 和 `mixed`，
+可选类型包括 `http`、`https`、`socks5`、`socks5h`、`mixed` 和 `fakehttp`，
 默认值为 `http`。
 
 ### 为 HTTPS 模式创建证书文件
@@ -81,6 +82,7 @@ proxlet --type https --tls-cert certs/proxlet-cert.pem --tls-key certs/proxlet-k
 
 ```bash
 proxlet --proxy 'socks5h://username:password@127.0.0.1:1080'
+proxlet --proxy 'fakehttp://strong-password@127.0.0.1:8080'
 proxlet --proxy 'ssh://username:password@127.0.0.1:22'
 proxlet --proxy 'ssh://username@127.0.0.1:22?key=/home/username/.ssh/id_ed25519'
 ```
@@ -88,6 +90,24 @@ proxlet --proxy 'ssh://username@127.0.0.1:22?key=/home/username/.ssh/id_ed25519'
 SSH 上游可使用 `ssh://username:password@host:port` 进行密码认证，也可添加
 `?key=/path/to/private_key` 进行公钥认证。如果 URL 同时包含密码和 `key`，
 该密码会作为私钥口令使用。
+
+fakehttp 代理链需要两个 `proxlet` 协作：上游实例以 fakehttp 模式监听，下游实例
+通过 `fakehttp://secret@host:port` 连接它，同时在本机继续提供浏览器可用的普通
+HTTP 或 SOCKS 代理入口：
+
+```bash
+# 在上游主机执行
+proxlet --lhost 10.10.50.20 --lport 8080 --type fakehttp \
+  --aes-secret 'strong-password123'
+
+# 在下游主机执行
+proxlet --lhost 127.0.0.1 --lport 9090 --type http \
+  --proxy 'fakehttp://strong-password123@10.10.50.20:8080'
+```
+
+指定 `--aes-secret` 后，fakehttp tunnel 内的 payload 会按帧使用 AES-256-GCM
+加密。密钥材料、salt、nonce base 与每帧 nonce 都由 secret 和 HTTP 外壳里的
+session token 按固定算法派生，因此下游 URL 只需要提供相同的 secret 即可解密。
 
 若需要通过 HTTPS 代理连接两个 `proxlet` 实例，请先使用证书启动上游实例，
 再将上游实例的 CA 证书提供给下游实例：
@@ -194,6 +214,7 @@ Stop-Process -Id <PID> -Force
 | `-a, --auth <password>` | 认证密码 |
 | `-t, --type <type>` | 代理类型，默认值：`http` |
 | `--proxy <SCHEMA_URL>` | 上游代理 URL |
+| `--aes-secret <SECRET>` | fakehttp 监听模式使用的 AES 加密 secret |
 | `--proxy-ca <FILE>` | 用于验证 HTTPS 上游代理的 CA 证书包 |
 | `--tls-cert <FILE>` | HTTPS 模式使用的证书文件 |
 | `--tls-key <FILE>` | HTTPS 模式使用的私钥文件 |

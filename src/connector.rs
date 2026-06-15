@@ -16,6 +16,8 @@ use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use url::Url;
 
+use crate::fakehttp;
+
 pub trait AsyncStream: AsyncRead + AsyncWrite + Unpin + Send {}
 
 impl<T> AsyncStream for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -86,6 +88,10 @@ enum Upstream {
         endpoint: Endpoint,
         remote_dns: bool,
     },
+    FakeHttp {
+        endpoint: Endpoint,
+        aes_secret: Option<String>,
+    },
     Ssh(SshEndpoint),
 }
 
@@ -142,6 +148,13 @@ impl Connector {
                 Ok(stream)
             }
             Some(Upstream::Ssh(endpoint)) => ssh_connect(endpoint, target).await,
+            Some(Upstream::FakeHttp {
+                endpoint,
+                aes_secret,
+            }) => {
+                let stream: BoxStream = Box::new(connect_tcp(&endpoint.target).await?);
+                fakehttp::connect(stream, &endpoint.target, target, aes_secret.as_deref()).await
+            }
         }
     }
 
@@ -200,6 +213,10 @@ fn parse_upstream(url: Url) -> Result<Upstream> {
             endpoint,
             remote_dns: true,
         }),
+        "fakehttp" => Ok(Upstream::FakeHttp {
+            endpoint,
+            aes_secret: fakehttp_secret(&url)?,
+        }),
         "ssh" => Ok(Upstream::Ssh(parse_ssh_upstream(target, &url)?)),
         schema => bail!("unsupported upstream proxy scheme: {schema}"),
     }
@@ -254,6 +271,16 @@ fn non_empty(value: String) -> Option<String> {
 
 fn decode_url_component(value: &str) -> Result<String> {
     Ok(percent_decode_str(value).decode_utf8()?.into_owned())
+}
+
+fn fakehttp_secret(url: &Url) -> Result<Option<String>> {
+    let username = url.username();
+    let password = url.password();
+    match (username.is_empty(), password) {
+        (_, Some(password)) => Ok(Some(decode_url_component(password)?)),
+        (false, None) => Ok(Some(decode_url_component(username)?)),
+        (true, None) => Ok(None),
+    }
 }
 
 async fn connect_tcp(target: &Target) -> Result<TcpStream> {
@@ -503,6 +530,19 @@ mod tests {
     fn accepts_ssh_upstream_url() {
         let url = Url::parse("ssh://user:password@localhost:22").expect("URL");
         assert!(matches!(parse_upstream(url), Ok(Upstream::Ssh(_))));
+    }
+
+    #[test]
+    fn accepts_fakehttp_upstream_url_with_aes_secret() {
+        let url = Url::parse("fakehttp://secret@localhost:8080").expect("URL");
+        let upstream = parse_upstream(url).expect("upstream");
+
+        match upstream {
+            Upstream::FakeHttp { aes_secret, .. } => {
+                assert_eq!(aes_secret.as_deref(), Some("secret"));
+            }
+            _ => panic!("expected fakehttp upstream"),
+        }
     }
 
     #[test]
