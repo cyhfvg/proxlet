@@ -64,7 +64,7 @@ pub struct Cli {
     #[arg(long, value_name = "SECRET")]
     pub aes_secret: Option<String>,
 
-    /// Maximum fakehttp encrypted frame payload size in KiB.
+    /// Maximum fakehttp encrypted frame payload size in KiB. Allowed values: 8, 16, 32, 64.
     #[arg(
         long,
         value_name = "KB",

@@ -88,4 +88,5 @@ fn proxy_help_includes_uri_examples() {
     assert!(help.contains("fakehttp://secret@host:8080"));
     assert!(help.contains("ssh://user:pass@host:22"));
     assert!(help.contains("ssh://user@host:22?key=/path/to/id_rsa"));
+    assert!(help.contains("Allowed values: 8, 16, 32, 64"));
 }
