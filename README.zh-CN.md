@@ -105,6 +105,11 @@ proxlet --lhost 127.0.0.1 --lport 9090 --type http \
   --proxy 'fakehttp://strong-password123@10.10.50.20:8080'
 ```
 
+fakehttp 的设计目标是让两个 `proxlet` 端点之间的链路看起来像普通纯 HTTP
+请求/响应流量。它本身不是浏览器可直接配置的 HTTP 代理协议；浏览器和应用
+应连接下游 `proxlet` 暴露的本地 HTTP 或 SOCKS 代理入口，再由下游实例转换为
+fakehttp tunnel。
+
 指定 `--aes-secret` 后，fakehttp tunnel 内的 payload 会按帧使用 AES-256-GCM
 加密。密钥材料、salt、nonce base 与每帧 nonce 都由 secret 和 HTTP 外壳里的
 session token 按固定算法派生，因此下游 URL 只需要提供相同的 secret 即可解密。

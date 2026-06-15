@@ -107,6 +107,12 @@ proxlet --lhost 127.0.0.1 --lport 9090 --type http \
   --proxy 'fakehttp://strong-password123@10.10.50.20:8080'
 ```
 
+fakehttp is designed to make the traffic between the two `proxlet` endpoints
+look like plain HTTP traffic. It is not a browser-configurable HTTP proxy
+protocol by itself; browsers and applications should connect to the downstream
+`proxlet`, which translates their local HTTP or SOCKS proxy traffic into the
+fakehttp tunnel.
+
 With `--aes-secret`, fakehttp tunnel payloads are framed and encrypted with
 AES-256-GCM. Key material, salt, nonce bases, and per-frame nonces are derived
 deterministically from the secret plus the session token carried in the HTTP
