@@ -17,8 +17,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::connector::{BoxStream, Connector, Target, relay};
 
+mod chunked;
 mod crypto;
 
+use chunked::chunked_body_stream;
 pub use crypto::CryptoRole;
 use crypto::encrypt_stream;
 
@@ -97,11 +99,13 @@ pub async fn serve(
     let response = format!(
         "HTTP/1.1 200 OK\r\n\
          Content-Type: application/octet-stream\r\n\
+         Transfer-Encoding: chunked\r\n\
          Cache-Control: no-store\r\n\
          {MAX_FRAME_SIZE_HEADER}: {negotiated_frame_size}\r\n\
          Connection: keep-alive\r\n\r\n",
     );
     client.write_all(response.as_bytes()).await?;
+    let client = chunked_body_stream(client);
     let client = match crypto_secret {
         Some(secret) => encrypt_stream(
             client,
@@ -162,6 +166,7 @@ pub async fn connect(
         .max_frame_size()?
         .unwrap_or(DEFAULT_MAX_FRAME_SIZE)
         .min(max_frame_size);
+    let stream = chunked_body_stream(stream);
     match aes_secret {
         Some(secret) => encrypt_stream(
             stream,
@@ -205,6 +210,7 @@ fn request_header(
          User-Agent: Mozilla/5.0\r\n\
          Accept: */*\r\n\
          Content-Type: application/octet-stream\r\n\
+         Transfer-Encoding: chunked\r\n\
          Cache-Control: no-cache\r\n",
         endpoint.authority()
     );

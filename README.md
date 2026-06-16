@@ -113,6 +113,10 @@ protocol by itself; browsers and applications should connect to the downstream
 `proxlet`, which translates their local HTTP or SOCKS proxy traffic into the
 fakehttp tunnel.
 
+After the handshake, fakehttp carries tunnel payloads inside HTTP/1.1 chunked
+bodies. Both upstream and downstream `proxlet` instances must run the same
+fakehttp implementation version.
+
 With `--aes-secret`, fakehttp tunnel payloads are framed and encrypted with
 AES-256-GCM. Key material, salt, nonce bases, and per-frame nonces are derived
 deterministically from the secret plus the session token carried in the HTTP

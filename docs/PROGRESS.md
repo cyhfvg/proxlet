@@ -37,6 +37,8 @@ Last updated: 2026-06-03
   as private key passphrases when a key is provided.
 - Added `fakehttp` listener and upstream chaining mode, with optional
   AES-256-GCM framing through `--aes-secret` and `fakehttp://secret@host:port`.
+- fakehttp now carries tunneled payload bytes inside HTTP/1.1 chunked bodies
+  after the initial request/response headers.
 - Added `--max-frame-size <KB>` for fakehttp encrypted frame sizing, with
   connection-level negotiation to the smaller endpoint value.
 - Selected Rust-native networking APIs (`rustls` and `russh`) so distributed

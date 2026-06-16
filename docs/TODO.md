@@ -18,5 +18,4 @@ Last updated: 2026-06-03
   private-key files; agent authentication is a future addition.
 - SSH upstream server host keys are trusted directly by design; this tool does
   not maintain or enforce `known_hosts` state.
-- fakehttp currently uses an HTTP/1.1-looking handshake followed by a
-  proxlet-specific bidirectional tunnel on the same TCP connection.
+- fakehttp still uses a bidirectional tunnel on one HTTP/1.1 connection.
