@@ -1,6 +1,6 @@
 # proxlet Implementation Progress
 
-Last updated: 2026-06-03
+Last updated: 2026-08-16
 
 ## Implemented
 
@@ -51,6 +51,9 @@ Last updated: 2026-06-03
 - Added live SSH upstream integration coverage for private-key authentication
   success and failure.
 - Added live encrypted fakehttp upstream integration coverage.
+- HTTP and fakehttp listeners now answer origin-form scanner probes such as
+  nmap `GET /` with a generic nginx 404, and replace `502 Bad Gateway` with a
+  503 page so version detection does not classify the port as `http-proxy`.
 
 ## Operation Notes
 

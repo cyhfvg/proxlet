@@ -4,8 +4,11 @@
 //! management, daemon spawning, and the top-level server runner used by the
 //! binary.
 
+/// Web-looking replies that hide nmap HTTP-proxy fingerprints.
+pub mod camouflage;
 /// Command-line parsing and runtime configuration.
 pub mod cli;
+
 /// Upstream connection management and bidirectional relay helpers.
 pub mod connector;
 /// Background process launching support.

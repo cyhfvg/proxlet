@@ -15,6 +15,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use crate::camouflage;
 use crate::connector::{BoxStream, Connector, Target, relay};
 
 mod chunked;
@@ -58,28 +59,49 @@ pub async fn serve(
     aes_secret: Option<&str>,
     max_frame_size: usize,
 ) -> Result<()> {
-    let header = read_header(&mut client).await?;
-    let request = Request::parse(&header)?;
-    let target = request.target()?;
-    let session = request.session()?;
-    let negotiated_frame_size = request
-        .max_frame_size()?
-        .unwrap_or(DEFAULT_MAX_FRAME_SIZE)
-        .min(normalize_max_frame_size(max_frame_size));
+    let header = match read_header(&mut client).await {
+        Ok(header) => header,
+        Err(_) => {
+            let _ = camouflage::write_not_found(&mut client).await;
+            return Ok(());
+        }
+    };
+    let request = match Request::parse(&header) {
+        Ok(request) => request,
+        Err(_) => {
+            camouflage::write_not_found(&mut client).await?;
+            return Ok(());
+        }
+    };
+    let target = match request.target() {
+        Ok(target) => target,
+        Err(_) => {
+            camouflage::write_not_found(&mut client).await?;
+            return Ok(());
+        }
+    };
+    let session = match request.session() {
+        Ok(session) => session,
+        Err(_) => {
+            camouflage::write_not_found(&mut client).await?;
+            return Ok(());
+        }
+    };
+    let negotiated_frame_size = match request.max_frame_size() {
+        Ok(size) => size
+            .unwrap_or(DEFAULT_MAX_FRAME_SIZE)
+            .min(normalize_max_frame_size(max_frame_size)),
+        Err(_) => {
+            camouflage::write_not_found(&mut client).await?;
+            return Ok(());
+        }
+    };
     let wants_crypto = request.wants_crypto();
     let crypto_secret = match (wants_crypto, aes_secret) {
         (true, Some(secret)) => Some(secret),
-        (true, None) => {
-            client
-                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
-                .await?;
-            bail!("fakehttp client requested encryption but --aes-secret is not configured")
-        }
-        (false, Some(_)) => {
-            client
-                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
-                .await?;
-            bail!("fakehttp listener requires encrypted clients")
+        (true, None) | (false, Some(_)) => {
+            camouflage::write_not_found(&mut client).await?;
+            bail!("fakehttp encryption policy mismatch")
         }
         (false, None) => None,
     };
@@ -89,15 +111,14 @@ pub async fn serve(
     let remote = match connector.connect(&target).await {
         Ok(remote) => remote,
         Err(error) => {
-            client
-                .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
-                .await?;
+            camouflage::write_service_unavailable(&mut client).await?;
             return Err(error);
         }
     };
 
     let response = format!(
         "HTTP/1.1 200 OK\r\n\
+         Server: nginx\r\n\
          Content-Type: application/octet-stream\r\n\
          Transfer-Encoding: chunked\r\n\
          Cache-Control: no-store\r\n\
@@ -611,5 +632,10 @@ mod tests {
         );
         assert_eq!(request.session().expect("session"), "session");
         assert!(request.wants_crypto());
+    }
+
+    #[test]
+    fn rejects_origin_form_scanner_probe() {
+        assert!(Request::parse(b"GET / HTTP/1.0\r\n\r\n").is_err());
     }
 }

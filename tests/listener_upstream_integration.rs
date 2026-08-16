@@ -71,7 +71,7 @@ async fn http_upstream_authentication_failure_returns_bad_gateway() -> Result<()
 
     let response = proxy_get_plain(proxlet.addr, "localhost", 1).await?;
 
-    assert!(response.starts_with(b"HTTP/1.1 502 Bad Gateway\r\n"));
+    assert!(response.starts_with(b"HTTP/1.1 503 Service Temporarily Unavailable\r\n"));
     upstream.task.await??;
     Ok(())
 }
@@ -132,7 +132,7 @@ async fn socks5h_upstream_authentication_failure_returns_bad_gateway() -> Result
 
     let response = proxy_get_plain(proxlet.addr, "localhost", 1).await?;
 
-    assert!(response.starts_with(b"HTTP/1.1 502 Bad Gateway\r\n"));
+    assert!(response.starts_with(b"HTTP/1.1 503 Service Temporarily Unavailable\r\n"));
     upstream.task.await??;
     Ok(())
 }
@@ -167,7 +167,7 @@ async fn ssh_upstream_authentication_failure_returns_bad_gateway() -> Result<()>
 
     let response = proxy_get_plain(proxlet.addr, "localhost", 1).await?;
 
-    assert!(response.starts_with(b"HTTP/1.1 502 Bad Gateway\r\n"));
+    assert!(response.starts_with(b"HTTP/1.1 503 Service Temporarily Unavailable\r\n"));
     Ok(())
 }
 
@@ -238,7 +238,7 @@ async fn ssh_upstream_private_key_authentication_failure_returns_bad_gateway() -
 
     let response = proxy_get_plain(proxlet.addr, "localhost", 1).await?;
 
-    assert!(response.starts_with(b"HTTP/1.1 502 Bad Gateway\r\n"));
+    assert!(response.starts_with(b"HTTP/1.1 503 Service Temporarily Unavailable\r\n"));
     Ok(())
 }
 

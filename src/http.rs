@@ -12,6 +12,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use url::Url;
 
+use crate::camouflage;
 use crate::cli::Auth;
 use crate::connector::{BoxStream, Connector, Target, relay};
 
@@ -40,8 +41,26 @@ pub async fn serve(
     connector: Arc<Connector>,
     auth: Option<&Auth>,
 ) -> Result<()> {
-    let header = read_header(&mut client, initial).await?;
-    let request = Request::parse(&header)?;
+    let header = match read_header(&mut client, initial).await {
+        Ok(header) => header,
+        Err(_) => {
+            let _ = camouflage::write_not_found(&mut client).await;
+            return Ok(());
+        }
+    };
+    let request = match Request::parse(&header) {
+        Ok(request) => request,
+        Err(_) => {
+            camouflage::write_not_found(&mut client).await?;
+            return Ok(());
+        }
+    };
+    // nmap GetRequest/HTTPOptions use origin-form paths such as `GET /`.
+    // Answer those as a normal web server instead of leaking proxy errors.
+    if !request.is_proxy_request() {
+        camouflage::write_not_found(&mut client).await?;
+        return Ok(());
+    }
     if !request.is_authorized(auth) {
         client
             .write_all(
@@ -57,11 +76,7 @@ pub async fn serve(
     let mut remote = match connector.connect(&target).await {
         Ok(remote) => remote,
         Err(error) => {
-            client
-                .write_all(
-                    b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                )
-                .await?;
+            camouflage::write_service_unavailable(&mut client).await?;
             return Err(error);
         }
     };
@@ -155,6 +170,34 @@ impl Request {
             version: version.to_owned(),
             headers,
         })
+    }
+
+    /// Check whether this request is a forward-proxy CONNECT or absolute-URI.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Parsed HTTP request.
+    ///
+    /// # Returns
+    ///
+    /// Returns `true` for CONNECT or absolute-form `http(s)://` requests.
+    /// Origin-form scanner probes such as `GET /` return `false`.
+    ///
+    /// # Errors
+    ///
+    /// This function does not return errors.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// assert!(request.is_proxy_request());
+    /// ```
+    fn is_proxy_request(&self) -> bool {
+        self.method.eq_ignore_ascii_case("CONNECT")
+            || self.uri.starts_with("http://")
+            || self.uri.starts_with("https://")
+            || self.uri.starts_with("HTTP://")
+            || self.uri.starts_with("HTTPS://")
     }
 
     /// Check listener Basic authentication for this request.
@@ -305,6 +348,7 @@ mod tests {
             username: "u".to_owned(),
             password: "p".to_owned()
         })));
+        assert!(request.is_proxy_request());
     }
 
     #[test]
@@ -315,5 +359,12 @@ mod tests {
         let rewritten =
             String::from_utf8(request.origin_form_header().expect("header")).expect("UTF-8 header");
         assert!(rewritten.starts_with("GET /a?q=1 HTTP/1.1\r\n"));
+        assert!(request.is_proxy_request());
+    }
+
+    #[test]
+    fn treats_origin_form_scanner_probe_as_non_proxy() {
+        let request = Request::parse(b"GET / HTTP/1.0\r\n\r\n").expect("request");
+        assert!(!request.is_proxy_request());
     }
 }

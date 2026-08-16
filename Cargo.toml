@@ -1,6 +1,6 @@
 [package]
 name = "proxlet"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 description = "A portable HTTP, HTTPS and SOCKS5 proxy server with proxy chaining"
 license = "BSD-3-Clause"

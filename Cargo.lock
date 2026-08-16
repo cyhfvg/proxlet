@@ -1750,7 +1750,7 @@ dependencies = [
 
 [[package]]
 name = "proxlet"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "aes-gcm 0.10.3",
  "anyhow",

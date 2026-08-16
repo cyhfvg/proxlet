@@ -1,6 +1,6 @@
 # proxlet TODO
 
-Last updated: 2026-06-03
+Last updated: 2026-08-16
 
 ## Next Work
 
@@ -19,3 +19,6 @@ Last updated: 2026-06-03
 - SSH upstream server host keys are trusted directly by design; this tool does
   not maintain or enforce `known_hosts` state.
 - fakehttp still uses a bidirectional tunnel on one HTTP/1.1 connection.
+- nmap version detection of HTTP/fakehttp listeners is reduced by answering
+  origin-form probes as a generic web server. A live CONNECT or absolute-URI
+  proxy request can still reveal forward-proxy behavior.

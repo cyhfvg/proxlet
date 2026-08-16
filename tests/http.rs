@@ -45,3 +45,29 @@ async fn forwards_http_request_to_an_origin_server() {
     proxy_task.await.expect("proxy task").expect("proxy result");
     assert!(response.ends_with(b"\r\n\r\nOK"));
 }
+
+#[tokio::test]
+async fn origin_form_scanner_probe_receives_nginx_not_found() {
+    let (mut caller, proxy_client) = tokio::io::duplex(4096);
+    let connector = Arc::new(Connector::new(None, None).expect("connector"));
+    let proxy_task = tokio::spawn(async move {
+        proxlet::http::serve(Box::new(proxy_client), &[], connector, None).await
+    });
+    caller
+        .write_all(b"GET / HTTP/1.0\r\n\r\n")
+        .await
+        .expect("scanner probe");
+    caller.shutdown().await.expect("probe shutdown");
+    let mut response = Vec::new();
+    caller
+        .read_to_end(&mut response)
+        .await
+        .expect("scanner response");
+
+    proxy_task.await.expect("proxy task").expect("proxy result");
+    let text = String::from_utf8(response).expect("UTF-8");
+    assert!(text.starts_with("HTTP/1.1 404 Not Found\r\n"));
+    assert!(text.contains("Server: nginx\r\n"));
+    assert!(!text.contains("407"));
+    assert!(!text.contains("502"));
+}
