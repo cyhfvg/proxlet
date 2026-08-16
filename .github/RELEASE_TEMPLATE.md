@@ -7,12 +7,14 @@
 ## Build Targets
 
 - `x86_64-unknown-linux-musl`
-- `x86_64-pc-windows-gnu`
+- `x86_64-pc-windows-msvc`
+- `aarch64-apple-darwin`
 
 ## Assets
 
 - `proxlet-{{ version }}-x86_64-unknown-linux-musl.tar.gz`
-- `proxlet-{{ version }}-x86_64-pc-windows-gnu.zip`
+- `proxlet-{{ version }}-x86_64-pc-windows-msvc.zip`
+- `proxlet-{{ version }}-aarch64-apple-darwin.tar.gz`
 - `SHA256SUMS.txt`
 
 ## Verify Downloads
