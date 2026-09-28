@@ -922,8 +922,11 @@ fn normalize_max_frame_size(size: usize) -> usize {
 ///
 /// # Errors
 ///
-/// Returns an error when the authority is malformed or lacks a port.
+/// Returns an error when the authority contains a control character, is
+/// malformed, or lacks a port. Control-character errors do not include the
+/// authority.
 fn parse_authority(authority: &str) -> Result<Target> {
+    Target::reject_control_chars(authority)?;
     if authority.starts_with('[') {
         let closing = authority
             .find(']')
@@ -1020,5 +1023,13 @@ mod tests {
         let with_body =
             Response::parse(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n").expect("response");
         assert!(with_body.has_body());
+    }
+
+    #[test]
+    fn rejects_control_characters_in_target_authority() {
+        let error = parse_authority("example.com\r\nX-Injected: 1:80").expect_err("control");
+        let text = error.to_string();
+        assert!(text.contains("control character"), "{text}");
+        assert!(!text.contains("X-Injected"), "{text}");
     }
 }

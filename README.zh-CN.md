@@ -65,7 +65,7 @@ proxlet --type fakehttp
 默认值为 `http`。
 
 HTTP 正向代理请求转发一次后关闭连接. `Host` 改成目标 authority, hop-by-hop
-头不转发. `CONNECT` 隧道不变.
+头不转发. `CONNECT` 隧道不变. 目标 host 含控制字符时会被拒绝, 不会拼进上游 `CONNECT` 请求.
 
 ### 为 HTTPS 模式创建证书文件
 

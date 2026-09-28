@@ -403,7 +403,9 @@ impl Request {
 ///
 /// # Errors
 ///
-/// Returns an error when an explicit port is malformed.
+/// Returns an error when the authority contains a control character or an
+/// explicit port is malformed. Control-character errors do not include the
+/// authority.
 ///
 /// # Examples
 ///
@@ -411,6 +413,7 @@ impl Request {
 /// let target = parse_authority("example.com:443", 80)?;
 /// ```
 fn parse_authority(authority: &str, default_port: u16) -> Result<Target> {
+    Target::reject_control_chars(authority)?;
     if authority.starts_with('[') {
         let closing = authority
             .find(']')
@@ -540,5 +543,15 @@ mod tests {
     fn treats_origin_form_scanner_probe_as_non_proxy() {
         let request = Request::parse(b"GET / HTTP/1.0\r\n\r\n").expect("request");
         assert!(!request.is_proxy_request());
+    }
+
+    #[test]
+    fn rejects_control_characters_in_connect_authority() {
+        let request = Request::parse(b"CONNECT example.com\x00.evil:80 HTTP/1.1\r\n\r\n")
+            .expect("request line");
+        let error = request.target().expect_err("control");
+        let text = error.to_string();
+        assert!(text.contains("control character"), "{text}");
+        assert!(!text.contains("evil"), "{text}");
     }
 }

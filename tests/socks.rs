@@ -48,3 +48,42 @@ async fn connects_and_relays_socks5_traffic() {
     proxy_task.await.expect("proxy task").expect("proxy result");
     assert_eq!(output, b"world");
 }
+
+#[tokio::test]
+async fn domain_with_control_characters_is_rejected_before_dial() {
+    let (mut caller, proxy_client) = tokio::io::duplex(4096);
+    let connector = Arc::new(Connector::new(None, None).expect("connector"));
+    let proxy_task = tokio::spawn(async move {
+        proxlet::socks::serve(
+            Box::new(proxy_client),
+            None,
+            connector,
+            None,
+            std::net::Ipv4Addr::LOCALHOST.into(),
+            "socks5",
+        )
+        .await
+    });
+    caller.write_all(&[0x05, 0x01, 0x00]).await.expect("hello");
+    let mut method = [0_u8; 2];
+    caller.read_exact(&mut method).await.expect("method");
+    assert_eq!(method, [0x05, 0x00]);
+    let domain = b"example.com\r\nProxy-Authorization: Basic eA==";
+    let mut connect = vec![
+        0x05,
+        0x01,
+        0x00,
+        0x03,
+        u8::try_from(domain.len()).expect("len"),
+    ];
+    connect.extend_from_slice(domain);
+    connect.extend_from_slice(&80_u16.to_be_bytes());
+    caller.write_all(&connect).await.expect("connect");
+    let mut reply = [0_u8; 10];
+    caller.read_exact(&mut reply).await.expect("reply");
+    assert_eq!(reply[1], 0x01);
+    let error = proxy_task.await.expect("task").expect_err("rejected");
+    let text = error.to_string();
+    assert!(text.contains("control character"), "{text}");
+    assert!(!text.contains("Proxy-Authorization"), "{text}");
+}

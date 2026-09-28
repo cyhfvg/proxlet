@@ -25,8 +25,10 @@ use super::{BoxStream, Target};
 ///
 /// # Errors
 ///
-/// Returns an error when writing the request, reading the response, parsing the
-/// response status, or receiving a non-200 status fails.
+/// Returns an error when the target host contains a control character, or when
+/// writing the request, reading the response, parsing the response status, or
+/// receiving a non-200 status fails. Control-character errors do not include
+/// the host.
 pub(super) async fn establish_http_tunnel(
     stream: &mut BoxStream,
     target: &Target,
@@ -34,6 +36,7 @@ pub(super) async fn establish_http_tunnel(
     timeout: Duration,
 ) -> Result<()> {
     super::with_timeout(timeout, "HTTP CONNECT handshake", async {
+        Target::reject_control_chars(&target.host)?;
         let mut request = format!(
             "CONNECT {} HTTP/1.1\r\nHost: {}\r\n",
             target.authority(),
@@ -219,4 +222,27 @@ async fn discard_socks_address(stream: &mut BoxStream, address_type: u8) -> Resu
 /// I/O fails.
 async fn read_header(stream: &mut BoxStream, limit: usize) -> Result<Vec<u8>> {
     crate::bufio::read_until(stream, &[], b"\r\n\r\n", limit, "proxy response header").await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncReadExt;
+
+    #[tokio::test]
+    async fn connect_rejects_control_characters_before_writing() {
+        let (client, mut upstream) = tokio::io::duplex(256);
+        let mut client: BoxStream = Box::new(client);
+        let target = Target::new("example.com\r\nProxy-Authorization: Basic eA==", 80);
+        let error = establish_http_tunnel(&mut client, &target, None, Duration::from_secs(1))
+            .await
+            .expect_err("control host");
+        let text = error.to_string();
+        assert!(text.contains("control character"), "{text}");
+        assert!(!text.contains("Proxy-Authorization"), "{text}");
+        drop(client);
+        let mut buf = [0_u8; 32];
+        let n = upstream.read(&mut buf).await.expect("read");
+        assert_eq!(n, 0, "rejected host must not be written");
+    }
 }

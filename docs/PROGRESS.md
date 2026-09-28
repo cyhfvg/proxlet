@@ -90,6 +90,9 @@ Last updated: 2026-09-28
   listener, is a startup error. A fakehttp listener or upstream with no secret
   still starts, and warns that the tunnel payload is plaintext. An encryption
   mismatch names whether the listener or the client lacks the secret.
+- A target host containing CR, LF, NUL, or another control character is
+  rejected before it can be spliced into an HTTP `CONNECT` request. The error
+  does not include the host.
 - SSH upstream mode accepts server host keys directly and does not read or
   write `known_hosts`.
 - fakehttp mode uses an HTTP/1.1-looking handshake followed by a proxlet-specific

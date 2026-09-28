@@ -17,6 +17,7 @@
 - [x] P1-4: 只给 `--user` 或只给 `--auth` 时启动失败, 并写明缺的是哪一个; 启动日志打印认证是否启用.
 - [x] P1-6: `--auth`、`--aes-secret` 和带 userinfo 的 `--proxy` 可改用 mode 0600 文件或 `PROXLET_AUTH` / `PROXLET_AES_SECRET` / `PROXLET_PROXY`; 明文 flag 启动时警告, 不打印 secret.
 - [x] P1-7: 非 fakehttp 监听上的 AES secret, 以及 fakehttp 上的 `--user`/`--auth`, 启动失败; 明文 fakehttp 启动时警告; 策略不匹配写明缺的是监听端还是客户端.
+- [x] P1-14: HTTP CONNECT 拼接前拒绝 host 里的 CR, LF, NUL 和其他控制字符; 错误不回显 host.
 
 结论: 有. 最严重的是 fakehttp 握手不在 AEAD 里, 改 URL 就能把已解密流量重定向. 默认 HTTP 模式在连接复用下会传错主机. 缓冲型写端进 relay 前不 flush, HTTPS 监听可能把 200 留在用户态. 效率上先改逐字节读头和 SSH 每连接握手.
 

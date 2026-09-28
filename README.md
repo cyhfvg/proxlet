@@ -67,7 +67,8 @@ Available types are `http`, `https`, `socks5`, `socks5h`, `mixed`, and
 
 HTTP forward-proxy requests are forwarded once and then closed. `Host` is
 rewritten to the target authority and hop-by-hop headers are not forwarded.
-`CONNECT` tunnels are unchanged.
+`CONNECT` tunnels are unchanged. A target host containing a control character
+is rejected and is not spliced into an upstream `CONNECT` request.
 
 ### Create certificate files for HTTPS mode
 

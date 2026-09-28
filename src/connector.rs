@@ -87,6 +87,33 @@ impl Target {
             format!("{}:{}", self.host, self.port)
         }
     }
+
+    /// Reject text that would break out of an HTTP header line.
+    ///
+    /// # Parameters
+    ///
+    /// * `value` - Host or authority that may be spliced into an HTTP request.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` when the text contains no control characters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the text contains CR, LF, NUL, or another control
+    /// character. The error does not include `value`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// Target::reject_control_chars("example.com")?;
+    /// ```
+    pub(crate) fn reject_control_chars(value: &str) -> Result<()> {
+        if value.chars().any(char::is_control) {
+            bail!("host contains a control character");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone)]

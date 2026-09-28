@@ -136,7 +136,8 @@ async fn authenticate(client: &mut BoxStream, auth: Option<&Auth>) -> Result<()>
 /// # Errors
 ///
 /// Returns an error when the command is not CONNECT, the address type is
-/// unsupported, address data is invalid, or I/O fails.
+/// unsupported, the domain contains a control character, address data is
+/// invalid, or I/O fails. Control-character errors do not include the domain.
 async fn read_request(client: &mut BoxStream) -> Result<Target> {
     let mut prefix = [0_u8; 3];
     client.read_exact(&mut prefix).await?;
@@ -163,6 +164,10 @@ async fn read_request(client: &mut BoxStream) -> Result<Target> {
     };
     let mut port = [0_u8; 2];
     client.read_exact(&mut port).await?;
+    if let Err(error) = Target::reject_control_chars(&host) {
+        write_reply(client, 0x01).await?;
+        return Err(error);
+    }
     Ok(Target::new(host, u16::from_be_bytes(port)))
 }
 
