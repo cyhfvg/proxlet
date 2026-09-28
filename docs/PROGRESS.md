@@ -58,6 +58,9 @@ Last updated: 2026-09-28
   rewritten to the target authority, hop-by-hop headers are not forwarded, and
   a later request on the same client connection is not copied to the first
   origin. `CONNECT` tunnels are unchanged.
+- Transient accept errors no longer stop the process. `EMFILE`, `ENFILE`,
+  `ECONNABORTED`, and `ENOBUFS` are logged and retried after a short backoff.
+  The listener exits only when the listening socket is closed.
 
 ## Operation Notes
 

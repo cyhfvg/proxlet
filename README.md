@@ -13,6 +13,7 @@ proxy endpoint and optionally routing traffic through an upstream proxy.
   and SSH.
 - Provides username/password authentication and source IP allowlists.
 - Runs in the background with a built-in daemon option.
+- Keeps accepting after transient listener errors instead of exiting.
 - Ships as a single executable for easy deployment.
 
 ## Installation

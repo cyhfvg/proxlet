@@ -19,7 +19,7 @@ use crate::cli::{Cli, Config, ProxyType};
 use crate::connector::Connector;
 use crate::{fakehttp, http, socks};
 
-/// Run the proxlet server until the process exits.
+/// Run the proxlet server until the listening socket is closed.
 ///
 /// # Parameters
 ///
@@ -27,14 +27,15 @@ use crate::{fakehttp, http, socks};
 ///
 /// # Returns
 ///
-/// This function normally runs forever and returns only when listener setup or
-/// accepting a connection fails.
+/// This function normally runs forever. Transient `accept` errors are logged
+/// and retried. It returns after listener setup fails or the listening socket
+/// is closed.
 ///
 /// # Errors
 ///
 /// Returns an error when configuration conversion, upstream connector setup,
-/// TLS loading, listen binding, local address lookup, or accepting a connection
-/// fails.
+/// TLS loading, listen binding, local address lookup, or a closed listening
+/// socket fails the accept loop.
 pub async fn run(cli: Cli) -> Result<()> {
     let config = Arc::new(cli.into_config().await?);
     let connector = Arc::new(Connector::with_fakehttp_max_frame_size(
@@ -56,7 +57,18 @@ pub async fn run(cli: Cli) -> Result<()> {
     }
 
     loop {
-        let (stream, peer) = listener.accept().await?;
+        let (stream, peer) = match listener.accept().await {
+            Ok(accepted) => accepted,
+            Err(error) if accept_error_is_fatal(&error) => {
+                return Err(error).context("listening socket is closed");
+            }
+            Err(error) => {
+                // EMFILE, ENFILE, ECONNABORTED, ENOBUFS 这类错误不能结束进程.
+                eprintln!("proxlet: accept failed: {error:#}; retrying");
+                tokio::time::sleep(ACCEPT_BACKOFF).await;
+                continue;
+            }
+        };
         // The allow-list is checked before spawning so rejected clients do not
         // consume per-connection task resources.
         if !config.allowed_ips.is_empty()
@@ -327,5 +339,121 @@ impl AsyncWrite for PrefixStream {
     /// Returns I/O errors from the inner stream.
     fn poll_shutdown(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.inner).poll_shutdown(context)
+    }
+}
+
+const ACCEPT_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Decide whether an `accept` error means the listening socket is closed.
+///
+/// # Parameters
+///
+/// * `error` - Error returned by `TcpListener::accept`.
+///
+/// # Returns
+///
+/// Returns `true` when the listener can no longer accept connections. Resource
+/// and per-connection errors, including `EMFILE`, `ENFILE`, `ECONNABORTED`,
+/// and `ENOBUFS`, return `false`.
+///
+/// # Errors
+///
+/// This function does not return errors.
+///
+/// # Examples
+///
+/// ```ignore
+/// let error = std::io::Error::from_raw_os_error(libc::EMFILE);
+/// assert!(!accept_error_is_fatal(&error));
+/// ```
+fn accept_error_is_fatal(error: &io::Error) -> bool {
+    if matches!(
+        error.kind(),
+        io::ErrorKind::InvalidInput | io::ErrorKind::Unsupported
+    ) {
+        return true;
+    }
+    error.raw_os_error().is_some_and(listener_errno_is_fatal)
+}
+
+#[cfg(unix)]
+fn listener_errno_is_fatal(code: i32) -> bool {
+    code == libc::EBADF
+        || code == libc::EINVAL
+        || code == libc::ENOTSOCK
+        || code == libc::EOPNOTSUPP
+}
+
+#[cfg(windows)]
+fn listener_errno_is_fatal(code: i32) -> bool {
+    // accept 返回 Winsock 错误号, 不是 libc 的 CRT errno.
+    const WSAEBADF: i32 = 10009;
+    const WSAEINVAL: i32 = 10022;
+    const WSAENOTSOCK: i32 = 10038;
+    const WSAEOPNOTSUPP: i32 = 10045;
+    const ERROR_INVALID_HANDLE: i32 = 6;
+    matches!(
+        code,
+        WSAEBADF | WSAEINVAL | WSAENOTSOCK | WSAEOPNOTSUPP | ERROR_INVALID_HANDLE
+    )
+}
+
+#[cfg(not(any(unix, windows)))]
+fn listener_errno_is_fatal(_code: i32) -> bool {
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kind_only_accept_errors_follow_listener_state() {
+        assert!(!accept_error_is_fatal(&io::Error::new(
+            io::ErrorKind::ConnectionAborted,
+            "aborted",
+        )));
+
+        assert!(accept_error_is_fatal(&io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "socket is not listening",
+        )));
+        assert!(accept_error_is_fatal(&io::Error::new(
+            io::ErrorKind::Unsupported,
+            "socket does not support accept",
+        )));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_accept_errnos_keep_the_listener_up_unless_it_is_closed() {
+        for code in [
+            libc::EMFILE,
+            libc::ENFILE,
+            libc::ECONNABORTED,
+            libc::ENOBUFS,
+            libc::ENOMEM,
+            libc::EINTR,
+        ] {
+            let error = io::Error::from_raw_os_error(code);
+            assert!(!accept_error_is_fatal(&error), "{code}");
+        }
+        for code in [libc::EBADF, libc::EINVAL, libc::ENOTSOCK, libc::EOPNOTSUPP] {
+            let error = io::Error::from_raw_os_error(code);
+            assert!(accept_error_is_fatal(&error), "{code}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_accept_errnos_keep_the_listener_up_unless_it_is_closed() {
+        for code in [10024_i32, 10053, 10055] {
+            let error = io::Error::from_raw_os_error(code);
+            assert!(!accept_error_is_fatal(&error), "{code}");
+        }
+        for code in [6_i32, 10009, 10022, 10038, 10045] {
+            let error = io::Error::from_raw_os_error(code);
+            assert!(accept_error_is_fatal(&error), "{code}");
+        }
     }
 }
