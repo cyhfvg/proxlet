@@ -94,6 +94,14 @@ pub struct Cli {
     /// PEM private key for HTTPS listener mode.
     #[arg(long, value_name = "FILE", requires = "tls_cert")]
     pub tls_key: Option<PathBuf>,
+
+    /// Append daemon stdout to this file. Requires --daemon.
+    #[arg(long, value_name = "FILE", requires = "daemon")]
+    pub log_file: Option<PathBuf>,
+
+    /// Write the background process id after the listener is bound. Requires --daemon.
+    #[arg(long, value_name = "FILE", requires = "daemon")]
+    pub pid_file: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]

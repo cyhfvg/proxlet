@@ -285,6 +285,8 @@ async fn start_proxlet_with_aes_secret(
         proxy_ca: None,
         tls_cert,
         tls_key,
+        log_file: None,
+        pid_file: None,
         connect_timeout: 10,
     };
     let task = tokio::spawn(async move {

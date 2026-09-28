@@ -4,7 +4,7 @@
 //! loading, mixed-mode protocol detection, and per-connection task spawning.
 
 use std::fs::File;
-use std::io::{self, BufReader, Cursor};
+use std::io::{self, BufReader, Cursor, Write};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -33,9 +33,8 @@ use crate::{fakehttp, http, socks};
 ///
 /// # Errors
 ///
-/// Returns an error when configuration conversion, upstream connector setup,
-/// TLS loading, listen binding, local address lookup, or a closed listening
-/// socket fails the accept loop.
+/// TLS loading, listen binding, local address lookup, daemon readiness
+/// reporting, or a closed listening socket fails the accept loop.
 pub async fn run(cli: Cli) -> Result<()> {
     let config = Arc::new(cli.into_config().await?);
     let connector = Arc::new(
@@ -50,24 +49,29 @@ pub async fn run(cli: Cli) -> Result<()> {
     let listener = TcpListener::bind(config.listen)
         .await
         .with_context(|| format!("could not bind {}", config.listen))?;
-    println!(
-        "proxlet listening on {} as {} proxy",
-        listener.local_addr()?,
+    let local = listener
+        .local_addr()
+        .context("could not read listen address")?;
+    log_line(format!(
+        "proxlet listening on {local} as {} proxy",
         config.proxy_type
-    );
+    ));
     if config.proxy_type == ProxyType::Mixed && tls.is_none() {
-        println!("proxlet: mixed mode HTTPS listener is disabled until TLS files are provided");
+        log_line("proxlet: mixed mode HTTPS listener is disabled until TLS files are provided");
     }
+    crate::daemon::report_ready(local)?;
 
     loop {
         let (stream, peer) = match listener.accept().await {
             Ok(accepted) => accepted,
             Err(error) if accept_error_is_fatal(&error) => {
-                return Err(error).context("listening socket is closed");
+                let error = anyhow::Error::from(error).context("listening socket is closed");
+                log_line(format!("proxlet: {error:#}"));
+                return Err(error);
             }
             Err(error) => {
                 // EMFILE, ENFILE, ECONNABORTED, ENOBUFS 这类错误不能结束进程.
-                eprintln!("proxlet: accept failed: {error:#}; retrying");
+                log_line(format!("proxlet: accept failed: {error:#}; retrying"));
                 tokio::time::sleep(ACCEPT_BACKOFF).await;
                 continue;
             }
@@ -80,7 +84,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                 .iter()
                 .any(|allowed| allowed.contains(&peer.ip()))
         {
-            eprintln!("proxlet: rejected connection from {}", peer.ip());
+            log_line(format!("proxlet: rejected connection from {}", peer.ip()));
             continue;
         }
         let config = config.clone();
@@ -88,7 +92,10 @@ pub async fn run(cli: Cli) -> Result<()> {
         let tls = tls.clone();
         tokio::spawn(async move {
             if let Err(error) = serve_client(stream, config, connector, tls).await {
-                eprintln!("proxlet: connection from {} failed: {error:#}", peer.ip());
+                log_line(format!(
+                    "proxlet: connection from {} failed: {error:#}",
+                    peer.ip()
+                ));
             }
         });
     }
@@ -390,6 +397,31 @@ fn accept_error_is_fatal(error: &io::Error) -> bool {
         return true;
     }
     error.raw_os_error().is_some_and(listener_errno_is_fatal)
+}
+/// Write one operational line and flush it.
+///
+/// # Parameters
+///
+/// * `message` - Line to write. A trailing newline is added.
+///
+/// # Returns
+///
+/// This function does not return a value.
+///
+/// # Errors
+///
+/// Write failures are ignored. Daemon mode must not die because the log file
+/// cannot accept another line.
+///
+/// # Examples
+///
+/// ```ignore
+/// log_line("proxlet listening on 127.0.0.1:1080 as http proxy");
+/// ```
+fn log_line(message: impl std::fmt::Display) {
+    // daemon 子进程的 stdout 是日志文件或 /dev/null. stderr 只留给父进程状态行.
+    println!("{message}");
+    let _ = io::stdout().flush();
 }
 
 #[cfg(unix)]

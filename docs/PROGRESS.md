@@ -27,8 +27,10 @@ Last updated: 2026-09-28
   `socks5h://`, and `fakehttp://` URLs.
 - Added `--proxy-ca <FILE>` so a proxlet instance can trust a private CA when
   chaining through another proxlet HTTPS proxy.
-- Added `--daemon` background mode with detached standard streams and printed
-  process IDs for shell-based process management.
+- Added `--daemon` background mode. The parent returns only after the child is
+  listening, then prints the listen address and PID. `--log-file` and
+  `--pid-file` require `--daemon`; without `--log-file`, child logs are
+  discarded. A failed start exits non-zero and does not leave a listener.
 - Implemented SSH transport chaining for URLs such as
   `ssh://username:password@127.0.0.1:22`, using SSH `direct-tcpip`
   forwarding and direct trust of upstream SSH host keys.

@@ -161,12 +161,15 @@ proxlet --allow-ip '127.0.0.1/8'
 
 ### 在后台运行
 
-使用 `--daemon` 可让 `proxlet` 在后台启动，不再占用当前终端。命令会打印
-后台进程的 PID。daemon 模式不会创建 PID 文件，也不会向启动它的终端写入
-日志。
+使用 `--daemon` 可让 `proxlet` 在后台启动，不再占用当前终端。父进程会等到
+子进程监听成功后才返回，并打印监听地址和 PID。启动失败时父进程以非 0 退出
+并打印原因，不会留下监听进程。
+
+`--log-file` 和 `--pid-file` 都要求同时使用 `--daemon`。没有 `--log-file`
+时，子进程日志会被丢弃。pid 文件只在监听成功后写入。
 
 ```bash
-proxlet --daemon --type mixed --lport 1080
+proxlet --daemon --type mixed --lport 1080 --log-file proxlet.log --pid-file proxlet.pid
 ```
 
 在 Linux 上，使用启动时显示的 PID 查询进程：
@@ -225,7 +228,9 @@ Stop-Process -Id <PID> -Force
 
 | 参数 | 说明 |
 | --- | --- |
-| `-d, --daemon` | 在后台运行，不占用终端输入输出 |
+| `-d, --daemon` | 在后台运行，不占用终端输入输出。父进程在子进程监听成功后才返回 |
+| `--log-file <FILE>` | 把 daemon 的 stdout 追加到该文件。要求 `--daemon`。未指定时子进程日志被丢弃 |
+| `--pid-file <FILE>` | 监听成功后写入后台进程 PID。要求 `--daemon` |
 | `--allow-ip <allow-src-ip>...` | 允许访问的客户端 IP 地址或 CIDR 网段 |
 | `-l, --lhost <lhost>` | 监听主机，默认值：`127.0.0.1` |
 | `-p, --lport <lport>` | 监听端口，默认值：`1080` |

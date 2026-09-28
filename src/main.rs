@@ -11,9 +11,8 @@ use proxlet::Cli;
 /// This function takes no parameters.
 ///
 /// # Returns
-///
-/// Returns `Ok(())` when daemon spawning succeeds or the foreground server exits
-/// cleanly.
+/// Returns `Ok(())` when the detached child is listening or the foreground
+/// server exits cleanly.
 ///
 /// # Errors
 ///
@@ -22,14 +21,16 @@ use proxlet::Cli;
 fn main() -> Result<()> {
     let cli = Cli::parse();
     if cli.daemon {
-        let pid = proxlet::daemon::spawn()?;
-        println!("proxlet started in background with PID {pid}");
-        return Ok(());
+        return proxlet::daemon::spawn(&cli);
     }
 
-    tokio::runtime::Builder::new_multi_thread()
+    let result = tokio::runtime::Builder::new_multi_thread()
         .enable_io()
         .enable_time()
         .build()?
-        .block_on(proxlet::run(cli))
+        .block_on(proxlet::run(cli));
+    if let Err(error) = &result {
+        proxlet::daemon::report_failure(error);
+    }
+    result
 }

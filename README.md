@@ -170,11 +170,16 @@ proxlet --allow-ip '127.0.0.1/8'
 ### Run in the background
 
 Use `--daemon` to start `proxlet` without keeping the current terminal
-occupied. The command prints the PID of the background process. Daemon mode
-does not create a PID file and does not write logs to the launching terminal.
+occupied. The parent returns only after the child is listening, then prints
+the listen address and PID. A failed start exits non-zero, prints the reason,
+and does not leave a listening process behind.
+
+`--log-file` and `--pid-file` both require `--daemon`. Without `--log-file`,
+child logs are discarded. The pid file is written only after the listener is
+bound.
 
 ```bash
-proxlet --daemon --type mixed --lport 1080
+proxlet --daemon --type mixed --lport 1080 --log-file proxlet.log --pid-file proxlet.pid
 ```
 
 On Linux, query the process using the PID printed at startup:
@@ -233,7 +238,9 @@ Stop-Process -Id <PID> -Force
 
 | Option | Description |
 | --- | --- |
-| `-d, --daemon` | Run in the background without terminal input or output |
+| `-d, --daemon` | Run in the background without terminal input or output. The parent returns after the child is listening |
+| `--log-file <FILE>` | Append daemon stdout to this file. Requires `--daemon`. Without it, child logs are discarded |
+| `--pid-file <FILE>` | Write the background PID after the listener is bound. Requires `--daemon` |
 | `--allow-ip <allow-src-ip>...` | Allow client IP addresses or CIDR networks |
 | `-l, --lhost <lhost>` | Listening host, default: `127.0.0.1` |
 | `-p, --lport <lport>` | Listening port, default: `1080` |
