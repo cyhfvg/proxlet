@@ -146,7 +146,39 @@ fn field(value: &str) -> String {
             out.push(ch);
         }
     }
-    if out.is_empty() { "-".to_owned() } else { out }
+    if out.is_empty() {
+        "-".to_owned()
+    } else {
+        out
+    }
+}
+
+/// Fold an IPv4-mapped IPv6 client address to IPv4.
+///
+/// # Parameters
+///
+/// * `ip` - Client address from an accepted socket or an allow-list entry.
+///
+/// # Returns
+///
+/// Returns the embedded IPv4 address when `ip` is `::ffff:a.b.c.d`. Other
+/// addresses are returned unchanged.
+///
+/// # Errors
+///
+/// This function does not return errors.
+///
+/// # Examples
+///
+/// ```text
+/// ::ffff:192.0.2.10 -> 192.0.2.10
+/// 2001:db8::1 -> 2001:db8::1
+/// ```
+pub fn canonical_client_ip(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(address) => address.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(ip),
+        other => other,
+    }
 }
 
 #[cfg(test)]

@@ -126,6 +126,7 @@ Last updated: 2026-09-28
 - Upstream `ssh` defaults to port 22 and `socks5`/`socks5h` default to 1080.
   `?key=` keeps a literal `+`. A password without a username is rejected,
   except a fakehttp secret in the password field.
+- `--allow-ip` compares an IPv4-mapped IPv6 client address as its IPv4 form.
 - SSH upstream mode accepts server host keys directly and does not read or
   write `known_hosts`.
 - fakehttp mode uses an HTTP/1.1-looking handshake followed by a proxlet-specific

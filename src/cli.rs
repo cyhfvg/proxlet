@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
 use ipnet::IpNet;
 use url::Url;
@@ -246,14 +246,16 @@ impl AllowedIp {
     /// # Returns
     ///
     /// Returns `true` when `ip` matches the address or belongs to the network.
+    /// An IPv4-mapped IPv6 address is compared as its IPv4 form.
     ///
     /// # Errors
     ///
     /// This function does not return errors.
     pub fn contains(&self, ip: &IpAddr) -> bool {
+        let folded = crate::access::canonical_client_ip(*ip);
         match self {
-            Self::Address(allowed) => allowed == ip,
-            Self::Network(network) => network.contains(ip),
+            Self::Address(allowed) => crate::access::canonical_client_ip(*allowed) == folded,
+            Self::Network(network) => network.contains(ip) || network.contains(&folded),
         }
     }
 }

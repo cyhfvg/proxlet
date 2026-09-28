@@ -209,6 +209,9 @@ proxlet --allow-ip '127.0.0.1,127.0.0.2'
 proxlet --allow-ip '127.0.0.1/8'
 ```
 
+An IPv4-mapped IPv6 client address such as `::ffff:192.0.2.10` matches the
+IPv4 address or CIDR. A different IPv6 address still does not.
+
 ### Run in the background
 
 Use `--daemon` to start `proxlet` without keeping the current terminal

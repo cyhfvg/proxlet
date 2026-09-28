@@ -32,11 +32,10 @@ fn parses_requested_command_line_options() {
     assert!(cli.daemon);
     assert_eq!(cli.proxy_type, ProxyType::Mixed);
     assert_eq!(cli.allow_ip.len(), 3);
-    assert!(
-        cli.allow_ip
-            .iter()
-            .any(|allowed| allowed.contains(&"127.0.0.2".parse().expect("IP")))
-    );
+    assert!(cli
+        .allow_ip
+        .iter()
+        .any(|allowed| allowed.contains(&"127.0.0.2".parse().expect("IP"))));
     assert_eq!(cli.proxy.expect("upstream").scheme(), "socks5h");
     assert_eq!(cli.aes_secret.as_deref(), Some("fake-secret"));
     assert_eq!(cli.max_frame_size, 32);
@@ -58,6 +57,25 @@ fn parses_each_allow_ip_input_form() {
     assert_eq!(comma_separated.allow_ip.len(), 2);
     assert_eq!(cidr.allow_ip.len(), 1);
     assert!(cidr.allow_ip[0].contains(&"127.10.20.30".parse().expect("IP")));
+}
+
+#[test]
+fn ipv4_mapped_client_matches_ipv4_allow_list() {
+    let cli = Cli::try_parse_from([
+        "proxlet",
+        "--allow-ip",
+        "192.0.2.10,192.0.2.0/24,::ffff:198.51.100.10",
+    ])
+    .expect("allow-list");
+    let mapped: std::net::IpAddr = "::ffff:192.0.2.10".parse().expect("mapped");
+    let other: std::net::IpAddr = "::ffff:192.0.3.10".parse().expect("other");
+    let v4: std::net::IpAddr = "198.51.100.10".parse().expect("v4");
+    let v6: std::net::IpAddr = "2001:db8::1".parse().expect("v6");
+
+    assert!(cli.allow_ip.iter().any(|allowed| allowed.contains(&mapped)));
+    assert!(!cli.allow_ip.iter().any(|allowed| allowed.contains(&other)));
+    assert!(cli.allow_ip.iter().any(|allowed| allowed.contains(&v4)));
+    assert!(!cli.allow_ip.iter().any(|allowed| allowed.contains(&v6)));
 }
 
 #[test]
