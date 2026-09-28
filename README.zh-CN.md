@@ -111,7 +111,7 @@ SSH 上游可使用 `ssh://username:password@host:port` 进行密码认证，也
 
 SSH 上游会复用一条已认证 session，每个目标只打开一条 `direct-tcpip` 通道。
 会话断开后会重新连接，私钥只加载一次。HTTPS 上游仍然是每个目标一条
-`CONNECT`；TLS session 由共享的 rustls client config 复用。HTTP 上游 CONNECT 只有状态码字段是 200 且响应没有 body 时才算成功。
+`CONNECT`；TLS session 由共享的 rustls client config 复用。客户端非 `CONNECT` 且上游是 HTTP 时，absolute-form 直接转发后关闭，不先打 `CONNECT`。上游响应原样转发，包括 `407`。拨号失败仍是 `502`。HTTP 上游 CONNECT 只有状态码字段是 200 且响应没有 body 时才算成功。
 
 fakehttp 代理链需要两个 `proxlet` 协作：上游实例以 fakehttp 模式监听，下游实例
 通过 `fakehttp://secret@host:port` 连接它，同时在本机继续提供浏览器可用的普通

@@ -4,6 +4,7 @@
 //! authentication, rejects non-CONNECT `https://` absolute-form, rewrites
 //! `http://` absolute-form requests to origin-form, and relays CONNECT tunnels.
 
+mod chain;
 mod forward;
 
 use std::net::IpAddr;
@@ -123,6 +124,11 @@ pub async fn serve(
         }
     };
     let logged = target.authority();
+    if !request.method.eq_ignore_ascii_case("CONNECT")
+        && chain::try_forward(&mut client, &request, &target, &connector, peer, protocol).await?
+    {
+        return Ok(());
+    }
     let mut remote = match connector.connect(&target).await {
         Ok(remote) => remote,
         Err(error) => {

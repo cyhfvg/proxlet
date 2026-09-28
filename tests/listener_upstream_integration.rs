@@ -60,7 +60,7 @@ async fn chains_through_live_http_upstream_proxy() -> Result<()> {
 }
 
 #[tokio::test]
-async fn http_upstream_authentication_failure_returns_bad_gateway() -> Result<()> {
+async fn http_upstream_authentication_failure_is_forwarded() -> Result<()> {
     let upstream = start_http_upstream().await?;
     let proxlet = start_proxlet(
         ProxyType::Http,
@@ -71,7 +71,7 @@ async fn http_upstream_authentication_failure_returns_bad_gateway() -> Result<()
 
     let response = proxy_get_plain(proxlet.addr, "localhost", 1).await?;
 
-    assert!(response.starts_with(b"HTTP/1.1 502 Bad Gateway\r\n"));
+    assert!(response.starts_with(b"HTTP/1.1 407 "));
     upstream.task.await??;
     Ok(())
 }
@@ -376,16 +376,42 @@ async fn start_http_upstream() -> Result<UpstreamFixture> {
                 .await?;
             return Ok(());
         }
-        let target = header_text
-            .lines()
-            .next()
-            .and_then(|line| line.split_whitespace().nth(1))
-            .ok_or_else(|| anyhow::anyhow!("CONNECT request did not include a target"))?;
-        let mut remote = TcpStream::connect(target).await?;
-        client
-            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+        let request_line = header_text.lines().next().unwrap_or("");
+        if let Some(target) = request_line.strip_prefix("CONNECT ") {
+            let target = target.split_whitespace().next().unwrap_or("");
+            let mut remote = TcpStream::connect(target).await?;
+            client
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await?;
+            tokio::io::copy_bidirectional(&mut client, &mut remote).await?;
+            return Ok(());
+        }
+        let target = request_line
+            .split_whitespace()
+            .nth(1)
+            .ok_or_else(|| anyhow::anyhow!("absolute-form request did not include a target"))?;
+        let url = Url::parse(target)?;
+        let host = url
+            .host_str()
+            .ok_or_else(|| anyhow::anyhow!("absolute-form request has no host"))?;
+        let port = url
+            .port_or_known_default()
+            .ok_or_else(|| anyhow::anyhow!("absolute-form request has no port"))?;
+        let query = url
+            .query()
+            .map(|query| format!("?{query}"))
+            .unwrap_or_default();
+        let mut remote = TcpStream::connect((host, port)).await?;
+        remote
+            .write_all(
+                format!(
+                    "GET {}{query} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n",
+                    url.path()
+                )
+                .as_bytes(),
+            )
             .await?;
-        tokio::io::copy_bidirectional(&mut client, &mut remote).await?;
+        tokio::io::copy(&mut remote, &mut client).await?;
         Ok(())
     });
     Ok(UpstreamFixture { addr, task })

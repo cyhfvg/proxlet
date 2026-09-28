@@ -11,6 +11,30 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use super::upstream::Credentials;
 use super::{BoxStream, Target};
 
+/// Build a `Proxy-Authorization` value for an upstream HTTP proxy.
+///
+/// # Parameters
+///
+/// * `credentials` - Upstream username and password.
+///
+/// # Returns
+///
+/// Returns a `Basic` authorization value. The caller must reject CR, LF, and NUL before splicing it into a header.
+///
+/// # Errors
+///
+/// This function does not return errors.
+///
+/// # Examples
+///
+/// ```text
+/// let value = proxy_authorization_value(&credentials);
+/// ```
+pub(super) fn proxy_authorization_value(credentials: &Credentials) -> String {
+    let token = BASE64.encode(format!("{}:{}", credentials.username, credentials.password));
+    format!("Basic {token}")
+}
+
 /// Establish an HTTP CONNECT tunnel through an upstream proxy.
 ///
 /// # Parameters
@@ -44,8 +68,8 @@ pub(super) async fn establish_http_tunnel(
             target.authority()
         );
         if let Some(auth) = credentials {
-            let token = BASE64.encode(format!("{}:{}", auth.username, auth.password));
-            request.push_str(&format!("Proxy-Authorization: Basic {token}\r\n"));
+            let value = proxy_authorization_value(auth);
+            request.push_str(&format!("Proxy-Authorization: {value}\r\n"));
         }
         request.push_str("\r\n");
         stream.write_all(request.as_bytes()).await?;

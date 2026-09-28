@@ -121,6 +121,79 @@ async fn absolute_form_path_and_query_are_not_rewritten() {
 }
 
 #[tokio::test]
+async fn http_upstream_receives_absolute_form_without_connect() {
+    let upstream = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("upstream bind");
+    let upstream_addr = upstream.local_addr().expect("upstream address");
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await.expect("upstream accept");
+        let mut header = Vec::new();
+        while !header.ends_with(b"\r\n\r\n") {
+            let mut byte = [0_u8; 1];
+            stream
+                .read_exact(&mut byte)
+                .await
+                .expect("upstream request");
+            header.push(byte[0]);
+        }
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .expect("upstream response");
+        let mut extra = [0_u8; 64];
+        let read = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            stream.read(&mut extra),
+        )
+        .await
+        .expect("upstream close timed out")
+        .expect("upstream extra");
+        assert_eq!(read, 0, "{:?}", &extra[..read]);
+        String::from_utf8(header).expect("UTF-8")
+    });
+    let url =
+        url::Url::parse(&format!("http://user:secret@{upstream_addr}")).expect("upstream url");
+    let connector = Arc::new(Connector::new(Some(url), None).expect("connector"));
+    let (mut caller, proxy_client) = tokio::io::duplex(4096);
+    let proxy_task = tokio::spawn(async move {
+        proxlet::http::serve(
+            Box::new(proxy_client),
+            &[],
+            connector,
+            None,
+            std::net::Ipv4Addr::LOCALHOST.into(),
+            "http",
+        )
+        .await
+    });
+    caller
+        .write_all(
+            b"GET http://example.com/foo/%2e%2e/bar?x=1 HTTP/1.1\r\nHost: example.com\r\n\r\n\
+              GET http://evil.example/secret HTTP/1.1\r\nHost: evil.example\r\n\r\n",
+        )
+        .await
+        .expect("proxy request");
+    let mut response = Vec::new();
+    caller
+        .read_to_end(&mut response)
+        .await
+        .expect("proxy response");
+    let header = upstream_task.await.expect("upstream task");
+    proxy_task.await.expect("proxy task").expect("proxy result");
+    assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+    assert!(
+        header.starts_with("GET http://example.com/foo/%2e%2e/bar?x=1 HTTP/1.1\r\n"),
+        "{header}"
+    );
+    assert!(header.contains("Proxy-Authorization: Basic "), "{header}");
+    assert!(header.contains("Host: example.com:80\r\n"), "{header}");
+    assert!(header.contains("Connection: close\r\n"), "{header}");
+    assert!(!header.contains("CONNECT "), "{header}");
+    assert!(!header.contains("evil.example"), "{header}");
+}
+
+#[tokio::test]
 async fn origin_form_scanner_probe_receives_nginx_not_found() {
     let (mut caller, proxy_client) = tokio::io::duplex(4096);
     let connector = Arc::new(Connector::new(None, None).expect("connector"));

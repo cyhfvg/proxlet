@@ -133,8 +133,11 @@ a username is rejected, except a fakehttp secret written as
 An SSH upstream reuses one authenticated session and opens one `direct-tcpip`
 channel per target. A dropped session is dialed again, and the private key is
 loaded once. An HTTPS upstream still opens one `CONNECT` tunnel per target;
-TLS sessions are reused by the shared rustls client config. An HTTP upstream
-CONNECT succeeds only when the status code is 200 and the response has no body.
+TLS sessions are reused by the shared rustls client config. A non-CONNECT
+request through an HTTP upstream is forwarded as absolute-form and then closed.
+It is not wrapped in `CONNECT`. The upstream response, including `407`, is
+forwarded. A dial failure is still `502`. An HTTP upstream CONNECT succeeds
+only when the status code is 200 and the response has no body.
 
 For fakehttp chaining, run one upstream `proxlet` in fakehttp mode and point a
 downstream `proxlet` at it. The downstream listener still exposes a normal

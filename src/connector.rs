@@ -317,6 +317,37 @@ impl Connector {
         }
     }
 
+    /// Dial a plain HTTP upstream without sending CONNECT.
+    ///
+    /// # Parameters
+    /// * `self` - Connector configuration.
+    ///
+    /// # Returns
+    /// Returns `Ok(None)` when the upstream is not `http://`. Otherwise returns
+    /// the connected stream and an optional `Basic` authorization value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the upstream TCP dial fails.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// let opened = connector.open_plain_http_upstream().await?;
+    /// ```
+    pub async fn open_plain_http_upstream(&self) -> Result<Option<(BoxStream, Option<String>)>> {
+        let Some(Upstream::Http(endpoint)) = &self.upstream else {
+            return Ok(None);
+        };
+        let stream: BoxStream =
+            Box::new(connect_tcp(&endpoint.target, self.connect_timeout).await?);
+        let authorization = endpoint
+            .credentials
+            .as_ref()
+            .map(protocol::proxy_authorization_value);
+        Ok(Some((stream, authorization)))
+    }
+
     /// Wrap a TCP stream in TLS for HTTPS upstream proxying.
     ///
     /// # Parameters
