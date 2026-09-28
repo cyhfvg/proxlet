@@ -10,12 +10,12 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio_rustls::TlsConnector;
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
-use tokio_rustls::TlsConnector;
 use url::Url;
 
 use crate::fakehttp;
@@ -27,8 +27,8 @@ mod upstream;
 
 use protocol::establish_http_tunnel;
 use socks::open_socks5;
-use ssh::{cached_private_key, open_ssh_channel, SshSessions};
-use upstream::{add_ca_certificates, parse_upstream, SshAuthenticationMethod, Upstream};
+use ssh::{SshSessions, cached_private_key, open_ssh_channel};
+use upstream::{SshAuthenticationMethod, Upstream, add_ca_certificates, parse_upstream};
 
 /// Async stream requirements shared by all proxlet transport implementations.
 pub trait AsyncStream: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -478,7 +478,6 @@ async fn connect_tcp(target: &Target, timeout: Duration) -> Result<TcpStream> {
 /// ```ignore
 /// let stream = connect_socket_addrs([first, second], Duration::from_millis(200)).await?;
 /// ```
-
 async fn connect_socket_addrs(
     addrs: impl IntoIterator<Item = SocketAddr>,
     timeout: Duration,

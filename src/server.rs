@@ -9,11 +9,11 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
-use tokio_rustls::rustls::ServerConfig;
 use tokio_rustls::TlsAcceptor;
+use tokio_rustls::rustls::ServerConfig;
 
 use crate::cli::{Cli, Config, ProxyType};
 use crate::connector::Connector;

@@ -4,19 +4,19 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{bail, Context as _, Result};
-use base64::engine::general_purpose::STANDARD as BASE64;
+use anyhow::{Context as _, Result, bail};
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use proxlet::{Cli, ProxyType};
-use russh::keys::{ssh_key, Algorithm, PrivateKey, PublicKey};
+use russh::keys::{Algorithm, PrivateKey, PublicKey, ssh_key};
 use russh::server::{Auth, Handler, Msg, Server, Session};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
+use tokio_rustls::TlsConnector;
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
-use tokio_rustls::TlsConnector;
 use url::Url;
 
 const USER: &str = "proxlet-user";

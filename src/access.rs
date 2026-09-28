@@ -7,7 +7,7 @@ use std::io::{self, Write};
 use std::net::{IpAddr, SocketAddr};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 
 /// Record one listener attempt.
 ///
@@ -148,11 +148,7 @@ fn field(value: &str) -> String {
             out.push(ch);
         }
     }
-    if out.is_empty() {
-        "-".to_owned()
-    } else {
-        out
-    }
+    if out.is_empty() { "-".to_owned() } else { out }
 }
 
 /// Fold an IPv4-mapped IPv6 client address to IPv4.

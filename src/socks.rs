@@ -6,11 +6,11 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::cli::Auth;
-use crate::connector::{relay, with_timeout, BoxStream, Connector, Target};
+use crate::connector::{BoxStream, Connector, Target, relay, with_timeout};
 
 /// Serve one SOCKS5 client connection.
 ///
@@ -260,11 +260,7 @@ fn socks_connect_reply(error: &anyhow::Error) -> u8 {
             .downcast_ref::<std::io::Error>()
             .is_some_and(|io_error| io_error.kind() == std::io::ErrorKind::ConnectionRefused)
     });
-    if refused {
-        0x05
-    } else {
-        0x04
-    }
+    if refused { 0x05 } else { 0x04 }
 }
 
 /// Read one byte from a SOCKS stream.

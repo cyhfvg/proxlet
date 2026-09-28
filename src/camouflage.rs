@@ -5,7 +5,7 @@
 //! 404 page. A request already identified as a proxy request gets a standard
 //! status instead, including `502 Bad Gateway` for an upstream failure.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use tokio::io::AsyncWriteExt;
 
 use crate::connector::BoxStream;

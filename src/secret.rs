@@ -8,7 +8,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 /// Read one secret line from an owner-only file.
 ///
@@ -344,7 +344,6 @@ pub(crate) fn url_is_plaintext_fakehttp(url: &Url) -> bool {
 /// constant_time_eq(b"secret", b"secret") -> true
 /// constant_time_eq(b"secreX", b"secret") -> false
 /// ```
-
 pub(crate) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     use subtle::ConstantTimeEq;
     left.ct_eq(right).into()

@@ -168,7 +168,7 @@ impl ChunkedBodyStream {
     ///
     /// # Errors
     /// This function does not return errors.
-    fn format_chunk_size<'a>(size: usize, buffer: &'a mut [u8; 20]) -> &'a mut [u8] {
+    fn format_chunk_size(size: usize, buffer: &mut [u8; 20]) -> &mut [u8] {
         const HEX: &[u8; 16] = b"0123456789ABCDEF";
         let mut start = buffer.len();
         let mut value = size;

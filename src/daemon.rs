@@ -72,11 +72,11 @@ pub fn spawn(cli: &Cli) -> Result<()> {
             return Err(error);
         }
     };
-    if let Some(path) = &cli.pid_file {
-        if let Err(error) = write_pid_file(path, child.id()) {
-            stop_child(&mut child);
-            return Err(error.context("could not write pid file; stopped the background process"));
-        }
+    if let Some(path) = &cli.pid_file
+        && let Err(error) = write_pid_file(path, child.id())
+    {
+        stop_child(&mut child);
+        return Err(error.context("could not write pid file; stopped the background process"));
     }
     println!(
         "proxlet listening on {addr} in background with PID {}",
@@ -426,10 +426,11 @@ fn ensure_readable(path: &Path) -> Result<()> {
 /// ensure_parent_dir(Path::new("/tmp/proxlet.pid"))?;
 /// ```
 fn ensure_parent_dir(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.is_dir() {
-            bail!("could not open {}", path.display());
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+        && !parent.is_dir()
+    {
+        bail!("could not open {}", path.display());
     }
     Ok(())
 }

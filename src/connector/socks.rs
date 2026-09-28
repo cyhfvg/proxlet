@@ -4,7 +4,7 @@ use std::future::Future;
 use std::net::IpAddr;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use super::protocol::socks_connect;
 use super::upstream::Endpoint;

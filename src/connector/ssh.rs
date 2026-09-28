@@ -5,14 +5,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use russh::client;
 use russh::keys::{Algorithm, HashAlg, PrivateKeyWithHashAlg};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
 use super::upstream::{SshAuthenticationMethod, SshEndpoint};
-use super::{with_timeout, BoxStream, Target};
+use super::{BoxStream, Target, with_timeout};
 
 #[derive(Clone)]
 /// SSH client handler used for upstream sessions.

@@ -3,9 +3,9 @@
 use std::net::IpAddr;
 use std::time::Duration;
 
-use anyhow::{bail, Result};
-use base64::engine::general_purpose::STANDARD as BASE64;
+use anyhow::{Result, bail};
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::upstream::Credentials;

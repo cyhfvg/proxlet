@@ -32,10 +32,11 @@ fn parses_requested_command_line_options() {
     assert!(cli.daemon);
     assert_eq!(cli.proxy_type, ProxyType::Mixed);
     assert_eq!(cli.allow_ip.len(), 3);
-    assert!(cli
-        .allow_ip
-        .iter()
-        .any(|allowed| allowed.contains(&"127.0.0.2".parse().expect("IP"))));
+    assert!(
+        cli.allow_ip
+            .iter()
+            .any(|allowed| allowed.contains(&"127.0.0.2".parse().expect("IP")))
+    );
     assert_eq!(cli.proxy.expect("upstream").scheme(), "socks5h");
     assert_eq!(cli.aes_secret.as_deref(), Some("fake-secret"));
     assert_eq!(cli.max_frame_size, 32);

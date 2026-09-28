@@ -2,13 +2,13 @@
 
 use std::net::IpAddr;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use tokio::io::AsyncWriteExt;
 
 use crate::connector::{BoxStream, Connector, Target};
 
-use super::forward;
 use super::Request;
+use super::forward;
 
 /// Forward absolute-form when the upstream is plain HTTP.
 ///

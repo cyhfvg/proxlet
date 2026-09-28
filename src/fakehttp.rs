@@ -385,7 +385,7 @@ async fn write_hello_chunk(stream: &mut BoxStream, frame: &[u8]) -> Result<()> {
 /// # Errors
 ///
 /// This function does not return errors.
-fn format_hex_size<'a>(size: usize, buffer: &'a mut [u8; 20]) -> &'a mut [u8] {
+fn format_hex_size(size: usize, buffer: &mut [u8; 20]) -> &mut [u8] {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut start = buffer.len();
     let mut value = size;
@@ -560,7 +560,7 @@ async fn read_hello_chunk(stream: &mut BoxStream) -> Result<Vec<u8>> {
     let line = line
         .strip_suffix(b"\r\n")
         .ok_or_else(|| anyhow::anyhow!("fakehttp hello chunk size line is missing CRLF"))?;
-    let text = std::str::from_utf8(&line)?;
+    let text = std::str::from_utf8(line)?;
     let chunk_size = usize::from_str_radix(text, 16)
         .with_context(|| format!("invalid fakehttp hello chunk size: {text}"))?;
     if !(HELLO_HEADER_SIZE + 1..=HELLO_HEADER_SIZE + MAX_HELLO_PAYLOAD).contains(&chunk_size) {

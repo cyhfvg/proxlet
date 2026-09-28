@@ -3,12 +3,12 @@
 
 use std::time::Duration;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::connector::{with_timeout, BoxStream};
+use crate::connector::{BoxStream, with_timeout};
 
-use super::{read_header, MAX_HEADER_SIZE};
+use super::{MAX_HEADER_SIZE, read_header};
 
 const HOP_BY_HOP: &[&str] = &[
     "connection",
@@ -407,10 +407,10 @@ fn content_length(headers: &[(String, String)]) -> Result<Option<u64>> {
         let parsed = value
             .parse::<u64>()
             .map_err(|_| anyhow::anyhow!("invalid Content-Length"))?;
-        if let Some(previous) = found {
-            if previous != parsed {
-                bail!("conflicting Content-Length");
-            }
+        if let Some(previous) = found
+            && previous != parsed
+        {
+            bail!("conflicting Content-Length");
         }
         found = Some(parsed);
     }

@@ -86,10 +86,10 @@ fn start_at(host: &str, port: u16, extra: &[&str]) -> Daemon {
 fn wait_log(path: &std::path::Path, needle: &str) -> String {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        if let Ok(text) = std::fs::read_to_string(path) {
-            if text.contains(needle) {
-                return text;
-            }
+        if let Ok(text) = std::fs::read_to_string(path)
+            && text.contains(needle)
+        {
+            return text;
         }
         if Instant::now() >= deadline {
             let text = std::fs::read_to_string(path).unwrap_or_default();

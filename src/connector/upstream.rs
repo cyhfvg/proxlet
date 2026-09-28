@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{self, BufReader};
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use percent_encoding::percent_decode_str;
 use tokio_rustls::rustls::RootCertStore;
 use url::Url;
@@ -159,7 +159,9 @@ pub(super) fn parse_upstream(url: Url) -> Result<Upstream> {
             aes_secret: fakehttp_secret(&url)?,
         }),
         "ssh" => Ok(Upstream::Ssh(parse_ssh_upstream(target, &url)?)),
-        schema => bail!("unsupported upstream proxy scheme: {schema}; expected http, https, socks5, socks5h, fakehttp, or ssh"),
+        schema => bail!(
+            "unsupported upstream proxy scheme: {schema}; expected http, https, socks5, socks5h, fakehttp, or ssh"
+        ),
     }
 }
 
@@ -335,11 +337,7 @@ fn ssh_identity_path(url: &Url) -> Result<Option<PathBuf>> {
 ///
 /// This function does not return errors.
 fn non_empty(value: String) -> Option<String> {
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
+    if value.is_empty() { None } else { Some(value) }
 }
 
 /// Percent-decode a URL component into UTF-8 text.
