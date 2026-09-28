@@ -28,8 +28,8 @@ use super::{BoxStream, Target};
 ///
 /// Returns an error when the target host contains a control character, or when
 /// writing the request, reading the response, parsing the response status, or
-/// receiving a non-200 status fails. Control-character errors do not include
-/// the host.
+/// receiving a non-200 status fails. A 200 response that includes a body is
+/// rejected. Control-character errors do not include the host.
 pub(super) async fn establish_http_tunnel(
     stream: &mut BoxStream,
     target: &Target,
@@ -51,12 +51,13 @@ pub(super) async fn establish_http_tunnel(
         stream.write_all(request.as_bytes()).await?;
         stream.flush().await?;
         let header = read_header(stream, 16 * 1024).await?;
-        let status = std::str::from_utf8(&header)?
-            .lines()
-            .next()
-            .unwrap_or_default();
-        if !status.contains(" 200 ") {
+        let header_text = std::str::from_utf8(&header)?;
+        let status = header_text.lines().next().unwrap_or_default();
+        if http_status_code(status)? != 200 {
             bail!("upstream HTTP proxy rejected CONNECT: {status}");
+        }
+        if connect_response_has_body(header_text) {
+            bail!("upstream HTTP proxy CONNECT response included a body");
         }
         Ok::<(), anyhow::Error>(())
     })
@@ -259,6 +260,71 @@ async fn discard_socks_address(stream: &mut BoxStream, address_type: u8) -> Resu
     Ok(())
 }
 
+/// Parse the numeric status code from an HTTP status line.
+///
+/// # Parameters
+///
+/// * `status` - First line of an upstream HTTP response.
+///
+/// # Returns
+///
+/// Returns the status code field.
+///
+/// # Errors
+///
+/// Returns an error when the line is not an HTTP status line or the code is
+/// not a number.
+///
+/// # Examples
+///
+/// ```text
+/// let code = http_status_code("HTTP/1.1 200 Connection Established")?;
+/// ```
+fn http_status_code(status: &str) -> Result<u16> {
+    let mut parts = status.split_whitespace();
+    let version = parts.next().unwrap_or_default();
+    if !version.starts_with("HTTP/") {
+        bail!("upstream HTTP proxy returned a malformed status line");
+    }
+    parts
+        .next()
+        .unwrap_or_default()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("upstream HTTP proxy returned a malformed status line"))
+}
+
+/// Return whether a CONNECT response header declares a body.
+///
+/// # Parameters
+///
+/// * `header` - Complete upstream response header, including the status line.
+///
+/// # Returns
+///
+/// Returns `true` when `Content-Length` is present and not zero, or when
+/// `Transfer-Encoding` is present.
+///
+/// # Errors
+///
+/// This function does not return errors.
+///
+/// # Examples
+///
+/// ```text
+/// assert!(!connect_response_has_body("HTTP/1.1 200 OK\r\n\r\n"));
+/// ```
+fn connect_response_has_body(header: &str) -> bool {
+    header.lines().skip(1).any(|line| {
+        let Some((name, value)) = line.split_once(':') else {
+            return false;
+        };
+        if name.eq_ignore_ascii_case("Transfer-Encoding") {
+            return true;
+        }
+        name.eq_ignore_ascii_case("Content-Length") && value.trim().parse::<u64>().ok() != Some(0)
+    })
+}
+
 /// Read an HTTP-style header until CRLFCRLF or a size limit.
 ///
 /// # Parameters
@@ -406,5 +472,52 @@ mod tests {
         let mut buf = [0_u8; 8];
         let n = upstream.read(&mut buf).await.expect("read");
         assert_eq!(n, 0, "rejected method must not send CONNECT");
+    }
+
+    #[tokio::test]
+    async fn http_connect_parses_status_code_and_rejects_body() {
+        let cases: &[(&[u8], bool, &str)] = &[
+            (b"HTTP/1.1 200\r\n\r\n", true, ""),
+            (
+                b"HTTP/1.1 500 Error 200 inside\r\n\r\n",
+                false,
+                "rejected CONNECT",
+            ),
+            (
+                b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n",
+                false,
+                "included a body",
+            ),
+            (
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+                false,
+                "included a body",
+            ),
+        ];
+        for (response, ok, needle) in cases {
+            let (client, mut upstream) = tokio::io::duplex(512);
+            let mut client: BoxStream = Box::new(client);
+            let response = *response;
+            let upstream_task = tokio::spawn(async move {
+                let mut buf = [0_u8; 256];
+                let n = upstream.read(&mut buf).await.expect("request");
+                assert!(buf[..n].starts_with(b"CONNECT "));
+                upstream.write_all(response).await.expect("response");
+            });
+            let result = establish_http_tunnel(
+                &mut client,
+                &Target::new("example.com", 443),
+                None,
+                Duration::from_secs(1),
+            )
+            .await;
+            upstream_task.await.expect("join");
+            if *ok {
+                result.unwrap_or_else(|error| panic!("{error}"));
+            } else {
+                let text = result.expect_err("status").to_string();
+                assert!(text.contains(needle), "{text}");
+            }
+        }
     }
 }

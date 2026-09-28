@@ -110,6 +110,8 @@ Last updated: 2026-09-28
   `0x02`. A different selected method fails and includes the method number.
 - A non-CONNECT `https://` absolute-form request is rejected with HTTP 400
   before dialing. It is not written as plaintext HTTP to port 443.
+- An HTTP upstream CONNECT succeeds only when the status code field is 200 and
+  the response does not declare a body.
 - SSH upstream mode accepts server host keys directly and does not read or
   write `known_hosts`.
 - fakehttp mode uses an HTTP/1.1-looking handshake followed by a proxlet-specific
