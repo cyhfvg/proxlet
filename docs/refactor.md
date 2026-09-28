@@ -23,6 +23,7 @@
 - [x] P2-6: 接受的客户端套接字和拨号成功的 TCP 都设置 `TCP_NODELAY`. 缓冲区大小没有改.
 - [x] P2-23: 增加每方向 256KiB 的生产 `relay` bench. 同一次短测量里默认 8KiB 是 770-812 us (约 629 MiB/s), 64KiB 是 429-973 us, 区间重叠, 所以没有改成 `copy_bidirectional_with_sizes`.
 - [x] P2-10: 配置了口令的上游 SOCKS 只提供方法 `0x02`. 选中的方法不是提供的那个就失败, 错误带方法号.
+- [x] P2-1: 非 `CONNECT` 的 `https://` absolute-form 在拨号前返回 400. 不向 443 写明文 HTTP.
 
 结论: 有. 最严重的是 fakehttp 握手不在 AEAD 里, 改 URL 就能把已解密流量重定向. 默认 HTTP 模式在连接复用下会传错主机. 缓冲型写端进 relay 前不 flush, HTTPS 监听可能把 200 留在用户态. 效率上先改逐字节读头和 SSH 每连接握手.
 

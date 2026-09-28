@@ -1,8 +1,8 @@
 //! HTTP forward proxy listener implementation.
 //!
 //! This module parses HTTP proxy requests, performs optional Basic
-//! authentication, rewrites absolute-form requests to origin-form, and relays
-//! CONNECT tunnels. A non-CONNECT request is forwarded once and then closed.
+//! authentication, rejects non-CONNECT `https://` absolute-form, rewrites
+//! `http://` absolute-form requests to origin-form, and relays CONNECT tunnels.
 
 mod forward;
 
@@ -40,7 +40,7 @@ pub(super) const MAX_HEADER_SIZE: usize = 64 * 1024;
 ///
 /// Returns an error when request parsing, authentication response writing,
 /// target connection, header rewriting, relay, or the closing shutdown fails.
-/// A non-CONNECT exchange fails when the origin response cannot be forwarded.
+/// A non-CONNECT `https://` absolute-form request is rejected before dialing.
 ///
 /// # Examples
 ///
@@ -100,6 +100,21 @@ pub async fn serve(
         )
         .await?;
         return Ok(());
+    }
+    if !request.method.eq_ignore_ascii_case("CONNECT")
+        && (request.uri.starts_with("https://") || request.uri.starts_with("HTTPS://"))
+    {
+        let logged = request.target().ok().map(|target| target.authority());
+        crate::access::record(peer, protocol, logged.as_deref(), "bad-request");
+        with_timeout(
+            connector.connect_timeout(),
+            "https absolute-form rejection",
+            client.write_all(
+                b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            ),
+        )
+        .await?;
+        bail!("https absolute-form requires CONNECT");
     }
 
     let target = match request.target() {
@@ -553,5 +568,30 @@ mod tests {
         let text = error.to_string();
         assert!(text.contains("control character"), "{text}");
         assert!(!text.contains("evil"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn rejects_https_absolute_form_before_dialing() {
+        use tokio::io::AsyncReadExt;
+        let (client, mut caller) = tokio::io::duplex(1024);
+        let connector = Arc::new(Connector::new(None, None).expect("connector"));
+        let serve = tokio::spawn(serve(
+            Box::new(client),
+            &[],
+            connector,
+            None,
+            "127.0.0.1".parse().expect("peer"),
+            "http",
+        ));
+        caller
+            .write_all(b"GET https://127.0.0.1:1/ HTTP/1.1\r\nHost: 127.0.0.1:1\r\n\r\n")
+            .await
+            .expect("write");
+        let mut buf = [0_u8; 128];
+        let n = caller.read(&mut buf).await.expect("read");
+        let text = String::from_utf8_lossy(&buf[..n]);
+        assert!(text.starts_with("HTTP/1.1 400"), "{text}");
+        let error = serve.await.expect("join").expect_err("rejected");
+        assert!(error.to_string().contains("https absolute-form"), "{error}");
     }
 }

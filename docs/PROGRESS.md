@@ -108,6 +108,8 @@ Last updated: 2026-09-28
   `copy_bidirectional`.
 - A SOCKS upstream URL with credentials offers only username/password method
   `0x02`. A different selected method fails and includes the method number.
+- A non-CONNECT `https://` absolute-form request is rejected with HTTP 400
+  before dialing. It is not written as plaintext HTTP to port 443.
 - SSH upstream mode accepts server host keys directly and does not read or
   write `known_hosts`.
 - fakehttp mode uses an HTTP/1.1-looking handshake followed by a proxlet-specific
