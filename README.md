@@ -114,17 +114,20 @@ protocol by itself; browsers and applications should connect to the downstream
 fakehttp tunnel.
 
 After the handshake, fakehttp carries tunnel payloads inside HTTP/1.1 chunked
-bodies. Both upstream and downstream `proxlet` instances must run the same
-fakehttp implementation version.
+bodies. The URL path is fixed; the tunnel target travels inside the first
+body chunk. When `--aes-secret` is set, that hello frame is encrypted and
+authenticated with AES-256-GCM over the handshake fields, the client
+contributes a random nonce and the server a random salt, and replayed
+handshakes are rejected. Both upstream and downstream `proxlet` instances
+must run the same fakehttp implementation version.
 
 With `--aes-secret`, fakehttp tunnel payloads are framed and encrypted with
-AES-256-GCM. Key material, salt, nonce bases, and per-frame nonces are derived
-deterministically from the secret plus the session token carried in the HTTP
-wrapper, so the downstream URL only needs the same secret value.
-Use `--max-frame-size <KB>` to choose the encrypted frame payload size. Allowed
-values are `8`, `16`, `32`, and `64`; the default is `16`. When two proxlet
-instances use different values, fakehttp negotiates the smaller value for that
-connection.
+AES-256-GCM. Key material is derived from the secret plus the per-connection
+client nonce and server salt, so the downstream URL only needs the same secret
+value. Use `--max-frame-size <KB>` to choose the encrypted frame payload size.
+Allowed values are `8`, `16`, `32`, and `64`; the default is `16`. When two
+proxlet instances use different values, fakehttp negotiates the smaller value
+for that connection.
 
 To chain two `proxlet` instances through an HTTPS proxy, start the upstream
 instance with its certificate, then provide its CA certificate to the

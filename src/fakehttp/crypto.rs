@@ -9,6 +9,7 @@ use anyhow::Result;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::connector::BoxStream;
+use crate::fakehttp::SALT_SIZE;
 
 use super::normalize_max_frame_size;
 
@@ -20,6 +21,7 @@ const READ_CHUNK_SIZE: usize = 8192;
 const MAX_PENDING_OUTPUT_FRAMES: usize = 4;
 const TAG_SIZE: usize = 16;
 const FRAME_HEADER_SIZE: usize = 4;
+const MAX_HELLO_FRAME_SIZE: usize = 512;
 
 #[derive(Clone, Copy)]
 /// Directional role used to select fakehttp read/write crypto labels.
@@ -30,13 +32,94 @@ pub enum CryptoRole {
     Server,
 }
 
+/// Seal the encrypted hello frame carrying the tunnel target.
+///
+/// # Parameters
+///
+/// * `secret` - Shared AES secret.
+/// * `client_nonce` - Random nonce chosen by the downstream client.
+/// * `target_authority` - Target authority carried inside the hello frame.
+/// * `aad` - Handshake transcript bound to the frame as additional
+///   authenticated data.
+///
+/// # Returns
+///
+/// Returns the wire frame `len || ciphertext || tag`.
+///
+/// # Errors
+///
+/// Returns an error when AES-GCM initialization or encryption fails.
+pub(super) fn seal_hello(
+    secret: &str,
+    client_nonce: &[u8; SALT_SIZE],
+    target_authority: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>> {
+    let mut cipher = CipherDirection::handshake(secret, client_nonce)?;
+    let mut payload = target_authority.to_vec();
+    let tag = cipher.encrypt_in_place(&mut payload, aad)?;
+    let frame_len = u32::try_from(payload.len() + TAG_SIZE)
+        .map_err(|_| anyhow::anyhow!("fakehttp hello frame is too large"))?;
+    let mut frame = Vec::with_capacity(FRAME_HEADER_SIZE + payload.len() + TAG_SIZE);
+    frame.extend_from_slice(&frame_len.to_be_bytes());
+    frame.extend_from_slice(&payload);
+    frame.extend_from_slice(&tag);
+    Ok(frame)
+}
+
+/// Open the encrypted hello frame and authenticate the handshake transcript.
+///
+/// # Parameters
+///
+/// * `secret` - Shared AES secret.
+/// * `client_nonce` - Random nonce chosen by the downstream client.
+/// * `frame` - Wire frame `len || ciphertext || tag` read from the hello chunk.
+/// * `aad` - Handshake transcript bound to the frame as additional
+///   authenticated data.
+///
+/// # Returns
+///
+/// Returns the authenticated target authority.
+///
+/// # Errors
+///
+/// Returns an error when the frame is malformed, decryption fails, or the
+/// plaintext is not valid UTF-8.
+pub(super) fn open_hello(
+    secret: &str,
+    client_nonce: &[u8; SALT_SIZE],
+    frame: &[u8],
+    aad: &[u8],
+) -> Result<String> {
+    if frame.len() < FRAME_HEADER_SIZE + TAG_SIZE {
+        anyhow::bail!("fakehttp hello frame is too short");
+    }
+    let len = u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]) as usize;
+    if len < TAG_SIZE || frame.len() != FRAME_HEADER_SIZE + len {
+        anyhow::bail!("fakehttp hello frame length mismatch");
+    }
+    let plaintext_len = len - TAG_SIZE;
+    if plaintext_len > MAX_HELLO_FRAME_SIZE {
+        anyhow::bail!("fakehttp hello frame is too large");
+    }
+    let mut payload = frame[FRAME_HEADER_SIZE..].to_vec();
+    let (ciphertext, tag_bytes) = payload.split_at_mut(plaintext_len);
+    let tag = Tag::from_slice(tag_bytes);
+    let mut cipher = CipherDirection::handshake(secret, client_nonce)?;
+    cipher
+        .decrypt_in_place(ciphertext, tag, aad)
+        .map_err(|_| anyhow::anyhow!("fakehttp hello frame failed authentication"))?;
+    Ok(String::from_utf8(ciphertext.to_vec())?)
+}
+
 /// Wrap a stream in AES-GCM fakehttp frame encryption.
 ///
 /// # Parameters
 ///
 /// * `stream` - Plain stream to wrap.
 /// * `secret` - Shared AES secret.
-/// * `session` - Per-tunnel session token.
+/// * `client_nonce` - Random nonce chosen by the downstream client.
+/// * `server_salt` - Random salt chosen by the upstream server.
 /// * `role` - Crypto role for read/write direction labels.
 /// * `max_frame_size` - Maximum encrypted payload frame size.
 ///
@@ -50,14 +133,16 @@ pub enum CryptoRole {
 pub(super) fn encrypt_stream(
     stream: BoxStream,
     secret: &str,
-    session: &str,
+    client_nonce: &[u8; SALT_SIZE],
+    server_salt: &[u8; SALT_SIZE],
     role: CryptoRole,
     max_frame_size: usize,
 ) -> Result<BoxStream> {
     Ok(Box::new(CryptoStream::new(
         stream,
         secret,
-        session,
+        client_nonce,
+        server_salt,
         role,
         max_frame_size,
     )?))
@@ -75,6 +160,12 @@ struct CryptoStream {
     plaintext_in_start: usize,
     encrypted_out: Vec<u8>,
     encrypted_out_start: usize,
+    /// Write bytes already queued but not yet reported as consumed.
+    write_inflight: Option<usize>,
+    /// Authenticated empty close frame has already been queued.
+    close_frame_queued: bool,
+    /// Clean EOF received via an empty authenticated close frame.
+    closed: bool,
 }
 
 impl CryptoStream {
@@ -84,7 +175,8 @@ impl CryptoStream {
     ///
     /// * `inner` - Underlying fakehttp byte stream.
     /// * `secret` - Shared AES secret.
-    /// * `session` - Per-tunnel session token.
+    /// * `client_nonce` - Random nonce chosen by the downstream client.
+    /// * `server_salt` - Random salt chosen by the upstream server.
     /// * `role` - Client or server role.
     /// * `max_frame_size` - Maximum frame payload size.
     ///
@@ -98,7 +190,8 @@ impl CryptoStream {
     fn new(
         inner: BoxStream,
         secret: &str,
-        session: &str,
+        client_nonce: &[u8; SALT_SIZE],
+        server_salt: &[u8; SALT_SIZE],
         role: CryptoRole,
         max_frame_size: usize,
     ) -> Result<Self> {
@@ -115,8 +208,8 @@ impl CryptoStream {
         let max_frame_size = normalize_max_frame_size(max_frame_size);
         Ok(Self {
             inner,
-            read_cipher: CipherDirection::new(secret, session, read_label)?,
-            write_cipher: CipherDirection::new(secret, session, write_label)?,
+            read_cipher: CipherDirection::traffic(secret, client_nonce, server_salt, read_label)?,
+            write_cipher: CipherDirection::traffic(secret, client_nonce, server_salt, write_label)?,
             max_frame_size,
             encrypted_in: Vec::with_capacity(max_frame_size + TAG_SIZE + FRAME_HEADER_SIZE),
             encrypted_in_start: 0,
@@ -124,6 +217,9 @@ impl CryptoStream {
             plaintext_in_start: 0,
             encrypted_out: Vec::with_capacity(max_frame_size + TAG_SIZE + FRAME_HEADER_SIZE),
             encrypted_out_start: 0,
+            write_inflight: None,
+            close_frame_queued: false,
+            closed: false,
         })
     }
 
@@ -258,7 +354,15 @@ impl CryptoStream {
             let frame = &mut self.encrypted_in[ciphertext_start..frame_end];
             let (ciphertext, tag_bytes) = frame.split_at_mut(plaintext_len);
             let tag = Tag::from_slice(tag_bytes);
-            self.read_cipher.decrypt_in_place(ciphertext, tag)?;
+            self.read_cipher.decrypt_in_place(ciphertext, tag, b"")?;
+        }
+        // An authenticated empty frame is the tunnel close signal; without it
+        // a truncated stream is reported as an error instead of clean EOF.
+        if plaintext_len == 0 {
+            self.encrypted_in_start = frame_end;
+            self.compact_encrypted_in();
+            self.closed = true;
+            return Ok(true);
         }
         self.plaintext_in.extend_from_slice(
             &self.encrypted_in[ciphertext_start..ciphertext_start + plaintext_len],
@@ -295,9 +399,10 @@ impl CryptoStream {
         self.encrypted_out.extend_from_slice(&bytes[..count]);
         // AES-GCM writes ciphertext over the queued plaintext and returns the
         // authentication tag separately, avoiding a per-frame output allocation.
-        let tag = self
-            .write_cipher
-            .encrypt_in_place(&mut self.encrypted_out[plaintext_start..plaintext_start + count])?;
+        let tag = self.write_cipher.encrypt_in_place(
+            &mut self.encrypted_out[plaintext_start..plaintext_start + count],
+            b"",
+        )?;
         self.encrypted_out.extend_from_slice(&tag);
         Ok(count)
     }
@@ -441,12 +546,14 @@ impl AsyncRead for CryptoStream {
             let filled = read_buffer.filled().len();
             match result {
                 Poll::Ready(Ok(())) if filled == 0 => {
-                    if self.encrypted_in.is_empty() {
+                    // EOF without an authenticated close frame means the tunnel
+                    // was truncated; only the empty close frame is clean EOF.
+                    if self.closed {
                         return Poll::Ready(Ok(()));
                     }
                     return Poll::Ready(Err(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
-                        "fakehttp encrypted frame ended early",
+                        "fakehttp encrypted stream ended without a close frame",
                     )));
                 }
                 Poll::Ready(Ok(())) => {
@@ -486,6 +593,18 @@ impl AsyncWrite for CryptoStream {
         if bytes.is_empty() {
             return Poll::Ready(Ok(0));
         }
+        // A previous write was accepted into the user-space queue but the inner
+        // write only partially completed; finish it before claiming more bytes.
+        if let Some(accepted) = self.write_inflight.take() {
+            match self.as_mut().poll_flush_pending(context) {
+                Poll::Ready(Ok(())) => return Poll::Ready(Ok(accepted)),
+                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                Poll::Pending => {
+                    self.write_inflight = Some(accepted);
+                    return Poll::Pending;
+                }
+            }
+        }
         if self.pending_encrypted_out()
             >= self.max_frame_size * MAX_PENDING_OUTPUT_FRAMES + TAG_SIZE
         {
@@ -501,7 +620,20 @@ impl AsyncWrite for CryptoStream {
         };
         match self.as_mut().poll_write_pending_once(context) {
             Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
-            Poll::Ready(Ok(())) | Poll::Pending => Poll::Ready(Ok(accepted)),
+            // A short write leaves ciphertext queued. Do not report the
+            // plaintext as accepted until that queue is drained.
+            Poll::Pending => {
+                self.write_inflight = Some(accepted);
+                Poll::Pending
+            }
+            Poll::Ready(Ok(())) => match self.as_mut().poll_flush_pending(context) {
+                Poll::Ready(Ok(())) => Poll::Ready(Ok(accepted)),
+                Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+                Poll::Pending => {
+                    self.write_inflight = Some(accepted);
+                    Poll::Pending
+                }
+            },
         }
     }
 
@@ -541,6 +673,14 @@ impl AsyncWrite for CryptoStream {
     ///
     /// Returns I/O errors from pending writes or inner shutdown.
     fn poll_shutdown(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        // Queue the authenticated close frame once. A second poll must not seal
+        // another empty frame under the next nonce.
+        if !self.close_frame_queued {
+            match self.queue_encrypted(&[]) {
+                Ok(_) => self.close_frame_queued = true,
+                Err(error) => return Poll::Ready(Err(error)),
+            }
+        }
         match self.as_mut().poll_flush_pending(context) {
             Poll::Ready(Ok(())) => Pin::new(&mut self.inner).poll_shutdown(context),
             other => other,
@@ -554,25 +694,34 @@ mod tests {
     use crate::fakehttp::DEFAULT_MAX_FRAME_SIZE;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    #[tokio::test]
-    async fn encrypted_stream_round_trips() {
-        let (client, server) = tokio::io::duplex(4096);
-        let mut client = encrypt_stream(
+    fn stream_pair(buffer: usize, frame_size: usize) -> (BoxStream, BoxStream) {
+        let (client, server) = tokio::io::duplex(buffer);
+        let nonce = [1_u8; SALT_SIZE];
+        let salt = [2_u8; SALT_SIZE];
+        let client = encrypt_stream(
             Box::new(client),
             "secret",
-            "session",
+            &nonce,
+            &salt,
             CryptoRole::Client,
-            DEFAULT_MAX_FRAME_SIZE,
+            frame_size,
         )
         .expect("client stream");
-        let mut server = encrypt_stream(
+        let server = encrypt_stream(
             Box::new(server),
             "secret",
-            "session",
+            &nonce,
+            &salt,
             CryptoRole::Server,
-            DEFAULT_MAX_FRAME_SIZE,
+            frame_size,
         )
         .expect("server stream");
+        (client, server)
+    }
+
+    #[tokio::test]
+    async fn encrypted_stream_round_trips() {
+        let (mut client, mut server) = stream_pair(4096, DEFAULT_MAX_FRAME_SIZE);
 
         client.write_all(b"hello").await.expect("client write");
         client.flush().await.expect("client flush");
@@ -589,23 +738,7 @@ mod tests {
 
     #[tokio::test]
     async fn encrypted_stream_round_trips_with_large_frame_size() {
-        let (client, server) = tokio::io::duplex(128 * 1024);
-        let mut client = encrypt_stream(
-            Box::new(client),
-            "secret",
-            "session",
-            CryptoRole::Client,
-            64 * 1024,
-        )
-        .expect("client stream");
-        let mut server = encrypt_stream(
-            Box::new(server),
-            "secret",
-            "session",
-            CryptoRole::Server,
-            64 * 1024,
-        )
-        .expect("server stream");
+        let (mut client, mut server) = stream_pair(128 * 1024, 64 * 1024);
         let input = vec![7_u8; 48 * 1024];
 
         client.write_all(&input).await.expect("client write");
@@ -614,5 +747,57 @@ mod tests {
         server.read_exact(&mut output).await.expect("server read");
 
         assert_eq!(output, input);
+    }
+
+    #[tokio::test]
+    async fn shutdown_delivers_clean_eof_to_the_peer() {
+        let (mut client, mut server) = stream_pair(4096, DEFAULT_MAX_FRAME_SIZE);
+
+        client.write_all(b"payload").await.expect("client write");
+        client.shutdown().await.expect("client shutdown");
+
+        let mut buffer = Vec::new();
+        server.read_to_end(&mut buffer).await.expect("server read");
+        assert_eq!(buffer, b"payload");
+    }
+
+    #[tokio::test]
+    async fn truncation_without_close_frame_is_an_error() {
+        let (client, server) = tokio::io::duplex(4096);
+        let nonce = [1_u8; SALT_SIZE];
+        let salt = [2_u8; SALT_SIZE];
+        let mut writer = encrypt_stream(
+            Box::new(client),
+            "secret",
+            &nonce,
+            &salt,
+            CryptoRole::Client,
+            DEFAULT_MAX_FRAME_SIZE,
+        )
+        .expect("writer stream");
+        let mut reader = encrypt_stream(
+            Box::new(server),
+            "secret",
+            &nonce,
+            &salt,
+            CryptoRole::Server,
+            DEFAULT_MAX_FRAME_SIZE,
+        )
+        .expect("reader stream");
+
+        writer
+            .write_all(b"truncated data")
+            .await
+            .expect("writer write");
+        writer.flush().await.expect("writer flush");
+        // Drop without shutdown: no authenticated close frame reaches the peer.
+        drop(writer);
+
+        let mut buffer = Vec::new();
+        let result = reader.read_to_end(&mut buffer).await;
+        let error = result.expect_err("truncation must surface an error");
+        assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+        // Buffered plaintext read before the truncation is still delivered.
+        assert_eq!(buffer, b"truncated data");
     }
 }

@@ -1,6 +1,6 @@
 # proxlet Implementation Progress
 
-Last updated: 2026-08-16
+Last updated: 2026-09-28
 
 ## Implemented
 
@@ -68,6 +68,15 @@ Last updated: 2026-08-16
 - SSH upstream mode accepts server host keys directly and does not read or
   write `known_hosts`.
 - fakehttp mode uses an HTTP/1.1-looking handshake followed by a proxlet-specific
-  bidirectional tunnel on the same TCP connection; encrypted sessions bind
-  AES-GCM derivation to the handshake session token to avoid nonce reuse across
-  connections.
+  bidirectional tunnel on the same TCP connection.
+- fakehttp v2 handshake (2026-09): the URL path is fixed and the tunnel target
+  travels inside the first body chunk, AES-256-GCM encrypted and bound to the
+  handshake transcript (Host, frame size, encoding) when a secret is
+  configured. The client contributes a random nonce and the server a random
+  salt; both feed key derivation, replayed handshakes are rejected by nonce,
+  the frame-size header is mandatory on both sides, and an authenticated
+  empty frame signals clean EOF so chunk-boundary truncation cannot look like
+  a normal close. Both endpoints must run the same fakehttp version.
+- Relay flushes both ends before copying so buffered writes are not left in
+  user space. fakehttp chunked and crypto writers report accepted bytes only
+  after the queued frame has been drained, including short writes.

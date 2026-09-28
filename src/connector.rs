@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tokio_rustls::rustls::pki_types::ServerName;
@@ -266,12 +266,16 @@ async fn connect_tcp(target: &Target) -> Result<TcpStream> {
 ///
 /// # Returns
 ///
-/// Returns `Ok(())` after both directions finish copying.
+/// Returns `Ok(())` after both directions finish copying. Buffered writes
+/// accepted before `relay` are flushed first so a later `copy_bidirectional`
+/// cannot leave them stranded in user space.
 ///
 /// # Errors
 ///
 /// Returns I/O errors from either stream.
 pub async fn relay(mut client: BoxStream, mut remote: BoxStream) -> io::Result<()> {
+    client.flush().await?;
+    remote.flush().await?;
     tokio::io::copy_bidirectional(&mut client, &mut remote)
         .await
         .map(|_| ())

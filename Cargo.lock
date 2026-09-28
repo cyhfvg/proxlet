@@ -1757,6 +1757,7 @@ dependencies = [
  "base64",
  "clap",
  "criterion",
+ "getrandom 0.4.2",
  "ipnet",
  "libc",
  "percent-encoding",

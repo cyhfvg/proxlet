@@ -110,12 +110,15 @@ fakehttp 的设计目标是让两个 `proxlet` 端点之间的链路看起来像
 应连接下游 `proxlet` 暴露的本地 HTTP 或 SOCKS 代理入口，再由下游实例转换为
 fakehttp tunnel。
 
-fakehttp 在握手后使用 HTTP/1.1 chunked body 承载 tunnel payload。上下游两个
-`proxlet` 实例需要使用相同版本的 fakehttp 实现。
+fakehttp 在握手后使用 HTTP/1.1 chunked body 承载 tunnel payload。URL 路径固定，
+真正的隧道目标放在第一个 body chunk 中。指定 `--aes-secret` 后，该 hello 帧会被
+AES-256-GCM 加密并与握手字段（Host、帧大小、编码方式）绑定认证；客户端提供随机
+nonce，服务端回应随机 salt，重放的握手会被拒绝。上下游两个 `proxlet` 实例需要
+使用相同版本的 fakehttp 实现。
 
 指定 `--aes-secret` 后，fakehttp tunnel 内的 payload 会按帧使用 AES-256-GCM
-加密。密钥材料、salt、nonce base 与每帧 nonce 都由 secret 和 HTTP 外壳里的
-session token 按固定算法派生，因此下游 URL 只需要提供相同的 secret 即可解密。
+加密。密钥材料由 secret 加上每次连接的客户端 nonce 与服务端 salt 派生，因此
+下游 URL 只需要提供相同的 secret 即可解密。
 可使用 `--max-frame-size <KB>` 设置加密帧 payload 大小，可选值为 `8`、`16`、
 `32`、`64`，默认值为 `16`。当两个 proxlet 设置不同值时，fakehttp 会为该连接
 协商使用较小值。
