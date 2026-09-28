@@ -415,20 +415,9 @@
 
 ## 测试缺口
 
-附在对应条目下, 不单独灌水. 现有覆盖主要是 `tests/cli.rs`, `tests/http.rs`, `tests/socks.rs`, `tests/connector.rs` (6 行), `tests/listener_upstream_integration.rs`.
+附在对应条目下, 不单独灌水. 上面列出的可观察行为大多已有测试, 包括 HTTP 第二次请求不进第一个 origin, fakehttp 校验失败前不拨号, session 重放拒绝, `https://` absolute-form 拒绝, 半套认证失败, 非 fakehttp 拒绝 `--aes-secret`, `socks5h` IP 字面量, SOCKS 域名控制字符不进上游 CONNECT, accept 资源错误后继续监听, absolute-form path 原样转发, 以及 daemon 绑定失败时父进程非 0 退出.
 
-缺这些可观察行为:
+仍缺:
 
-- 同一 HTTP 客户端连接上的第二个请求不能打到第一个 origin.
-- fakehttp 改写 path 里的 target 后, 服务端在校验失败前不得 `connect`, 也不得解密转发.
-- 重放同一 fakehttp session 必须被拒绝, 不能从 server-to-client 计数器 0 再加密一段新响应.
-- `https://` absolute-form 被拒绝, 而不是明文写到 443.
-- 只给 `--user` 或只给 `--auth` 时进程失败.
-- `--aes-secret` 配在非 fakehttp 监听上时进程失败.
-- `socks5h` 转发 `127.0.0.1` / `::1` 时使用 ATYP 1 或 4, 不是 ATYP 3.
-- SOCKS 域名含 CR/LF 时, HTTP 上游 CONNECT 不得发出注入头.
-- `accept` 返回资源类错误时进程继续监听.
 - HTTPS 监听写出 CONNECT 200 后, 客户端继续发送之前, 对端必须已经收到这 200.
-- `GET http://example.com/foo/%2e%2e/secret` 转发到源站时 path 仍是原始 request-target, 不是折叠后的 `/secret`.
-- daemon 子进程绑定失败时, 父进程必须以非 0 退出并打印原因, 不能只打印 PID.
 - allowlist 集成覆盖仍按 TODO, 不在这里再开一条.
