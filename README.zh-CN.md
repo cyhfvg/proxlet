@@ -64,7 +64,7 @@ proxlet --type fakehttp
 ```
 
 可选类型包括 `http`、`https`、`socks5`、`socks5h`、`mixed` 和 `fakehttp`，
-默认值为 `http`。`socks5` 和 `socks5h` 监听端行为相同。远程 DNS 只由上游 URL 决定，不由 `--type` 决定。
+默认值为 `http`。`socks5` 和 `socks5h` 监听端行为相同。远程 DNS 只由上游 URL 决定，不由 `--type` 决定。IPv6 authority 必须加方括号；未加括号时直接拒绝，不会套默认端口。
 
 HTTP 正向代理请求转发一次后关闭连接. `Host` 改成目标 authority, hop-by-hop
 头不转发. `CONNECT` 隧道不变. 目标 host 含控制字符时会被拒绝, 不会拼进上游 `CONNECT` 请求. 非 `CONNECT` 的 `https://` absolute-form 在拨号前返回 400, 不会向 443 写明文 HTTP.

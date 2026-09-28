@@ -418,9 +418,9 @@ impl Request {
 ///
 /// # Errors
 ///
-/// Returns an error when the authority contains a control character or an
-/// explicit port is malformed. Control-character errors do not include the
-/// authority.
+/// Returns an error when the authority contains a control character, an
+/// unbracketed IPv6 address, or a malformed port. Control-character errors
+/// do not include the authority.
 ///
 /// # Examples
 ///
@@ -444,7 +444,8 @@ fn parse_authority(authority: &str, default_port: u16) -> Result<Target> {
     }
     match authority.rsplit_once(':') {
         Some((host, port)) if !host.contains(':') => Ok(Target::new(host, port.parse()?)),
-        _ => Ok(Target::new(authority, default_port)),
+        Some(_) => bail!("unbracketed IPv6 authority"),
+        None => Ok(Target::new(authority, default_port)),
     }
 }
 
@@ -568,6 +569,8 @@ mod tests {
         let text = error.to_string();
         assert!(text.contains("control character"), "{text}");
         assert!(!text.contains("evil"), "{text}");
+        let bare = Request::parse(b"CONNECT 2001:db8::1:443 HTTP/1.1\r\n\r\n").expect("line");
+        assert!(bare.target().expect_err("bare").to_string().contains("unbracketed IPv6"));
     }
 
     #[tokio::test]
