@@ -54,6 +54,10 @@ Last updated: 2026-09-28
 - HTTP and fakehttp listeners now answer origin-form scanner probes such as
   nmap `GET /` with a generic nginx 404, and replace `502 Bad Gateway` with a
   503 page so version detection does not classify the port as `http-proxy`.
+- HTTP forward-proxy requests are forwarded once and then closed. `Host` is
+  rewritten to the target authority, hop-by-hop headers are not forwarded, and
+  a later request on the same client connection is not copied to the first
+  origin. `CONNECT` tunnels are unchanged.
 
 ## Operation Notes
 

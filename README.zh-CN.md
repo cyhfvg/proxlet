@@ -62,6 +62,9 @@ proxlet --type fakehttp
 可选类型包括 `http`、`https`、`socks5`、`socks5h`、`mixed` 和 `fakehttp`，
 默认值为 `http`。
 
+HTTP 正向代理请求转发一次后关闭连接. `Host` 改成目标 authority, hop-by-hop
+头不转发. `CONNECT` 隧道不变.
+
 ### 为 HTTPS 模式创建证书文件
 
 生成本地使用的证书文件，然后启动 HTTPS 代理：

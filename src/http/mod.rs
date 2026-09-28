@@ -2,7 +2,9 @@
 //!
 //! This module parses HTTP proxy requests, performs optional Basic
 //! authentication, rewrites absolute-form requests to origin-form, and relays
-//! CONNECT tunnels or regular HTTP traffic.
+//! CONNECT tunnels. A non-CONNECT request is forwarded once and then closed.
+
+mod forward;
 
 use std::sync::Arc;
 
@@ -16,7 +18,7 @@ use crate::camouflage;
 use crate::cli::Auth;
 use crate::connector::{BoxStream, Connector, Target, relay};
 
-const MAX_HEADER_SIZE: usize = 64 * 1024;
+pub(super) const MAX_HEADER_SIZE: usize = 64 * 1024;
 
 /// Serve one HTTP proxy client connection.
 ///
@@ -34,7 +36,14 @@ const MAX_HEADER_SIZE: usize = 64 * 1024;
 /// # Errors
 ///
 /// Returns an error when request parsing, authentication response writing,
-/// target connection, header rewriting, or bidirectional relay fails.
+/// target connection, header rewriting, relay, or the closing shutdown fails.
+/// A non-CONNECT exchange fails when the origin response cannot be forwarded.
+///
+/// # Examples
+///
+/// ```ignore
+/// http::serve(client, &[], connector, None).await?;
+/// ```
 pub async fn serve(
     mut client: BoxStream,
     initial: &[u8],
@@ -85,29 +94,48 @@ pub async fn serve(
         client
             .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             .await?;
-    } else {
-        remote.write_all(&request.origin_form_header()?).await?;
+        relay(client, remote).await?;
+        return Ok(());
     }
-    relay(client, remote).await?;
+
+    // 不 relay. 流水线里的下一个请求必须留在客户端, 不能拷到第一个 origin.
+    // drop 不会发送 TLS close_notify, 客户端 read_to_end 会报 unexpected eof.
+    let origin_header = request.origin_form_header()?;
+    forward::exchange(
+        &mut client,
+        &mut remote,
+        &request.method,
+        &request.headers,
+        &origin_header,
+    )
+    .await?;
+    client.shutdown().await?;
+    remote.shutdown().await?;
     Ok(())
 }
 
-/// Read an HTTP request header.
+/// Read an HTTP message header.
 ///
 /// # Parameters
 ///
-/// * `stream` - Client stream to read.
+/// * `stream` - Stream to read.
 /// * `initial` - Bytes already consumed by protocol detection.
 ///
 /// # Returns
 ///
-/// Returns request header bytes including CRLFCRLF.
+/// Returns header bytes including CRLFCRLF.
 ///
 /// # Errors
 ///
-/// Returns an error when the header exceeds the limit, the client closes early,
+/// Returns an error when the header exceeds the limit, the peer closes early,
 /// or I/O fails.
-async fn read_header(stream: &mut BoxStream, initial: &[u8]) -> Result<Vec<u8>> {
+///
+/// # Examples
+///
+/// ```ignore
+/// let header = read_header(&mut stream, &[]).await?;
+/// ```
+pub(super) async fn read_header(stream: &mut BoxStream, initial: &[u8]) -> Result<Vec<u8>> {
     let mut header = initial.to_vec();
     while !header.ends_with(b"\r\n\r\n") {
         if header.len() >= MAX_HEADER_SIZE {
@@ -144,6 +172,12 @@ impl Request {
     ///
     /// Returns an error when the header is not UTF-8, the request line is
     /// invalid, or a header line is malformed.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let request = Request::parse(b"GET http://example.com/ HTTP/1.1\r\n\r\n")?;
+    /// ```
     fn parse(bytes: &[u8]) -> Result<Self> {
         let text = std::str::from_utf8(bytes)?;
         let mut lines = text.trim_end_matches("\r\n\r\n").split("\r\n");
@@ -214,6 +248,12 @@ impl Request {
     /// # Errors
     ///
     /// This function does not return errors.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// assert!(request.is_authorized(Some(&auth)));
+    /// ```
     fn is_authorized(&self, auth: Option<&Auth>) -> bool {
         let Some(auth) = auth else {
             return true;
@@ -241,6 +281,12 @@ impl Request {
     ///
     /// Returns an error when the URI is invalid, lacks host/port information, or
     /// uses an unsupported scheme.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let target = request.target()?;
+    /// ```
     fn target(&self) -> Result<Target> {
         if self.method.eq_ignore_ascii_case("CONNECT") {
             return parse_authority(&self.uri, 443);
@@ -267,11 +313,19 @@ impl Request {
     ///
     /// # Returns
     ///
-    /// Returns rewritten header bytes suitable for the origin server.
+    /// Returns rewritten header bytes suitable for the origin server. `Host`
+    /// matches the target authority, hop-by-hop headers are removed, and
+    /// `Connection: close` is set.
     ///
     /// # Errors
     ///
     /// Returns an error when the request URI is not a valid absolute URI.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let header = request.origin_form_header()?;
+    /// ```
     fn origin_form_header(&self) -> Result<Vec<u8>> {
         let uri = Url::parse(&self.uri)
             .map_err(|_| anyhow::anyhow!("forward proxy requests must use an absolute URI"))?;
@@ -283,15 +337,9 @@ impl Request {
             path.push('?');
             path.push_str(query);
         }
+        let authority = self.target()?.authority();
         let mut rewritten = format!("{} {} {}\r\n", self.method, path, self.version);
-        for (name, value) in &self.headers {
-            if !name.eq_ignore_ascii_case("Proxy-Authorization")
-                && !name.eq_ignore_ascii_case("Proxy-Connection")
-            {
-                rewritten.push_str(&format!("{name}: {value}\r\n"));
-            }
-        }
-        rewritten.push_str("\r\n");
+        forward::append_forwarded_headers(&mut rewritten, &self.headers, Some(&authority));
         Ok(rewritten.into_bytes())
     }
 }
@@ -310,6 +358,12 @@ impl Request {
 /// # Errors
 ///
 /// Returns an error when an explicit port is malformed.
+///
+/// # Examples
+///
+/// ```ignore
+/// let target = parse_authority("example.com:443", 80)?;
+/// ```
 fn parse_authority(authority: &str, default_port: u16) -> Result<Target> {
     if authority.starts_with('[') {
         let closing = authority
@@ -359,7 +413,81 @@ mod tests {
         let rewritten =
             String::from_utf8(request.origin_form_header().expect("header")).expect("UTF-8 header");
         assert!(rewritten.starts_with("GET /a?q=1 HTTP/1.1\r\n"));
+        assert!(rewritten.contains("Host: example.com:80\r\n"));
+        assert!(rewritten.contains("Connection: close\r\n"));
         assert!(request.is_proxy_request());
+    }
+
+    #[test]
+    fn strips_hop_by_hop_headers_and_connection_tokens() {
+        let request = Request::parse(
+            b"GET http://example.com/a HTTP/1.1\r\n\
+              Host: evil.example\r\n\
+              Connection: keep-alive, X-Foo\r\n\
+              Keep-Alive: timeout=5\r\n\
+              X-Foo: drop\r\n\
+              X-Bar: keep\r\n\
+              Proxy-Authorization: Basic abc\r\n\
+              TE: trailers\r\n\
+              Upgrade: websocket\r\n\
+              Expect: 100-continue\r\n\
+              \r\n",
+        )
+        .expect("request");
+        let rewritten =
+            String::from_utf8(request.origin_form_header().expect("header")).expect("UTF-8 header");
+        assert!(
+            rewritten.contains("Host: example.com:80\r\n"),
+            "{rewritten}"
+        );
+        assert!(rewritten.contains("Connection: close\r\n"), "{rewritten}");
+        assert!(rewritten.contains("X-Bar: keep\r\n"), "{rewritten}");
+        assert!(!rewritten.contains("evil.example"), "{rewritten}");
+        assert!(!rewritten.contains("X-Foo"), "{rewritten}");
+        assert!(
+            !rewritten.to_ascii_lowercase().contains("keep-alive"),
+            "{rewritten}"
+        );
+        assert!(
+            !rewritten
+                .to_ascii_lowercase()
+                .contains("proxy-authorization"),
+            "{rewritten}"
+        );
+        assert!(
+            !rewritten.to_ascii_lowercase().contains("te:"),
+            "{rewritten}"
+        );
+        assert!(
+            !rewritten.to_ascii_lowercase().contains("upgrade:"),
+            "{rewritten}"
+        );
+        assert!(
+            !rewritten.to_ascii_lowercase().contains("expect:"),
+            "{rewritten}"
+        );
+    }
+
+    #[test]
+    fn keeps_chunked_framing_and_drops_content_length() {
+        let request = Request::parse(
+            b"POST http://example.com/a HTTP/1.1\r\n\
+              Transfer-Encoding: chunked\r\n\
+              Content-Length: 5\r\n\
+              \r\n",
+        )
+        .expect("request");
+        let rewritten =
+            String::from_utf8(request.origin_form_header().expect("header")).expect("UTF-8 header");
+        assert!(
+            rewritten.contains("Transfer-Encoding: chunked\r\n"),
+            "{rewritten}"
+        );
+        assert!(
+            !rewritten.to_ascii_lowercase().contains("content-length"),
+            "{rewritten}"
+        );
+        assert!(rewritten.contains("Connection: close\r\n"), "{rewritten}");
     }
 
     #[test]

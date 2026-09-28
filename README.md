@@ -63,6 +63,10 @@ proxlet --type fakehttp
 Available types are `http`, `https`, `socks5`, `socks5h`, `mixed`, and
 `fakehttp`. The default is `http`.
 
+HTTP forward-proxy requests are forwarded once and then closed. `Host` is
+rewritten to the target authority and hop-by-hop headers are not forwarded.
+`CONNECT` tunnels are unchanged.
+
 ### Create certificate files for HTTPS mode
 
 Generate certificate files for local use, then start an HTTPS proxy:
