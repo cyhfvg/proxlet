@@ -1,8 +1,8 @@
 //! End-to-end proxy benchmarks for proxlet protocol paths.
 //!
 //! The benchmarks exercise the public protocol handlers over in-memory duplex
-//! streams and loopback origin listeners, giving a stable way to compare HTTP,
-//! SOCKS5, and encrypted fakehttp proxy overhead.
+//! streams and loopback origin listeners, plus a bulk copy through the
+//! production relay.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -59,8 +59,22 @@ fn proxy_benches(criterion: &mut Criterion) {
             black_box(response);
         });
     });
-
     group.finish();
+
+    let mut bulk = criterion.benchmark_group("relay_bulk");
+    bulk.throughput(criterion::Throughput::Bytes((RELAY_BULK_BYTES * 2) as u64));
+    let payload = Arc::new(vec![0x5a_u8; RELAY_BULK_BYTES]);
+    bulk.bench_function("tcp_256kib_each_way", |bencher| {
+        let payload = Arc::clone(&payload);
+        bencher.to_async(&runtime).iter(|| {
+            let payload = Arc::clone(&payload);
+            async move {
+                let copied = relay_bulk_copy(payload).await.expect("bulk relay");
+                black_box(copied);
+            }
+        });
+    });
+    bulk.finish();
 }
 
 /// Benchmark one HTTP forward-proxy request and response.
@@ -206,6 +220,73 @@ async fn fakehttp_encrypted_round_trip() -> Result<Vec<u8>> {
     origin_task.await??;
     server_task.await??;
     Ok(response)
+}
+
+const RELAY_BULK_BYTES: usize = 256 * 1024;
+
+/// Copy 256 KiB in each direction through the production relay.
+///
+/// # Parameters
+///
+/// * `payload` - Bytes written on both endpoints. Its length is the copy size.
+///
+/// # Returns
+///
+/// Returns the number of payload bytes read at both endpoints.
+///
+/// # Errors
+///
+/// Returns an error when socket setup, copying, or relay completion fails.
+///
+/// # Examples
+///
+/// ```text
+/// let copied = relay_bulk_copy(payload).await?;
+/// ```
+async fn relay_bulk_copy(payload: Arc<Vec<u8>>) -> Result<usize> {
+    let (left_peer, left_relay) = tcp_pair().await?;
+    let (right_peer, right_relay) = tcp_pair().await?;
+    for stream in [&left_peer, &left_relay, &right_peer, &right_relay] {
+        stream.set_nodelay(true)?;
+    }
+    let relay_task = tokio::spawn(proxlet::connector::relay(
+        Box::new(left_relay),
+        Box::new(right_relay),
+    ));
+    let copy_len = payload.len();
+    let payload_right = Arc::clone(&payload);
+    let (mut left_read, mut left_write) = left_peer.into_split();
+    let (mut right_read, mut right_write) = right_peer.into_split();
+    let write_left = tokio::spawn(async move {
+        left_write.write_all(&payload).await?;
+        left_write.shutdown().await?;
+        Ok::<(), anyhow::Error>(())
+    });
+    let write_right = tokio::spawn(async move {
+        right_write.write_all(&payload_right).await?;
+        right_write.shutdown().await?;
+        Ok::<(), anyhow::Error>(())
+    });
+    let mut got_left = vec![0_u8; copy_len];
+    let mut got_right = vec![0_u8; copy_len];
+    tokio::try_join!(
+        left_read.read_exact(&mut got_left),
+        right_read.read_exact(&mut got_right),
+    )?;
+    write_left.await??;
+    write_right.await??;
+    relay_task.await??;
+    black_box(got_left);
+    black_box(got_right);
+    Ok(copy_len * 2)
+}
+
+async fn tcp_pair() -> Result<(tokio::net::TcpStream, tokio::net::TcpStream)> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let connector = tokio::spawn(async move { tokio::net::TcpStream::connect(address).await });
+    let (accepted, _) = listener.accept().await?;
+    Ok((connector.await??, accepted))
 }
 
 /// Start a one-shot HTTP origin server.

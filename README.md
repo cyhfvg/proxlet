@@ -16,6 +16,7 @@ proxy endpoint and optionally routing traffic through an upstream proxy.
 - Keeps accepting after transient listener errors instead of exiting.
 - Bounds DNS, TCP dials, and handshakes with `--connect-timeout` (default 10 seconds). Established tunnels are not idle-timed out.
 - Enables `TCP_NODELAY` on accepted client sockets and outbound TCP connections.
+- Relays tunnel bytes with tokio's default 8 KiB buffers. A 256 KiB bidirectional loopback benchmark did not show a clear gain from larger buffers.
 - Ships as a single executable for easy deployment.
 
 ## Installation

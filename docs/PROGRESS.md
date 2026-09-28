@@ -102,6 +102,10 @@ Last updated: 2026-09-28
   Only a hostname is sent as address type 3.
 - Accepted client sockets and successfully dialed TCP sockets enable
   `TCP_NODELAY`. Relay buffer sizes are unchanged.
+- `benches/proxy.rs` measures a 256 KiB copy in each direction through the
+  production relay. A short loopback run did not show a clear gain from 64 KiB
+  buffers over tokio's default 8 KiB buffers, so `relay` still uses
+  `copy_bidirectional`.
 - SSH upstream mode accepts server host keys directly and does not read or
   write `known_hosts`.
 - fakehttp mode uses an HTTP/1.1-looking handshake followed by a proxlet-specific
