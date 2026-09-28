@@ -26,6 +26,7 @@
 - [x] P2-1: 非 `CONNECT` 的 `https://` absolute-form 在拨号前返回 400. 不向 443 写明文 HTTP.
 - [x] P2-12: 上游 HTTP CONNECT 按状态码字段判断 200. 带 `Content-Length` 或 `Transfer-Encoding` 的 200 被拒绝, 不把 body 当隧道数据.
 - [x] P2-11: SOCKS 用户名和密码按字节比较. 非 UTF-8 口令或域名先写失败应答. 连接被拒绝映射 `0x05`.
+- [x] P2-15: `scripts/local_build.sh --help` 写 proxlet. Windows 注释 target 与 release workflow 的 `x86_64-pc-windows-msvc` 对齐.
 
 结论: 有. 最严重的是 fakehttp 握手不在 AEAD 里, 改 URL 就能把已解密流量重定向. 默认 HTTP 模式在连接复用下会传错主机. 缓冲型写端进 relay 前不 flush, HTTPS 监听可能把 200 留在用户态. 效率上先改逐字节读头和 SSH 每连接握手.
 

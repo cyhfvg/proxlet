@@ -13,7 +13,7 @@ usage() {
     cat <<EOF
 Usage: ${SCRIPT_NAME} [OPTIONS]
 
-Build the brute binary for local development or a selected Rust target.
+Build the proxlet binary for local development or a selected Rust target.
 
 Options:
   --release          Build an optimized release binary.
@@ -30,7 +30,7 @@ Examples:
 
   # target:
   # x86_64-unknown-linux-musl
-  # x86_64-pc-windows-gnu
+  # x86_64-pc-windows-msvc
 
 EOF
 }

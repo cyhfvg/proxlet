@@ -114,6 +114,8 @@ Last updated: 2026-09-28
   the response does not declare a body.
 - A SOCKS5 listener compares usernames and passwords as bytes. A non-UTF-8
   password or domain gets a failure reply. Connection refused is reply `0x05`.
+- `scripts/local_build.sh --help` names proxlet. Its Windows target comment is
+  `x86_64-pc-windows-msvc`.
 - SSH upstream mode accepts server host keys directly and does not read or
   write `known_hosts`.
 - fakehttp mode uses an HTTP/1.1-looking handshake followed by a proxlet-specific
