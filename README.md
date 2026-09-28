@@ -164,10 +164,12 @@ printf '%s\n' 'strong-password' > proxlet.auth
 proxlet --type mixed --user alice --auth-file proxlet.auth
 ```
 
-`--aes-secret-file` and `PROXLET_AES_SECRET` are the same kind of alternative
-for fakehttp. `--proxy-file` and `PROXLET_PROXY` keep an upstream URL that
-contains a password out of process arguments. On Unix the file must not be
-group- or world-readable. Non-Unix builds do not check an ACL.
+`--aes-secret`, `--aes-secret-file`, and `PROXLET_AES_SECRET` require
+`--type fakehttp`. `--user` and `--auth` are rejected in that mode. A fakehttp
+listener or `fakehttp://` upstream with no secret still starts, and warns that
+the tunnel payload is plaintext. `--proxy-file` and `PROXLET_PROXY` keep an
+upstream URL that contains a password out of process arguments. On Unix the
+file must not be group- or world-readable. Non-Unix builds do not check an ACL.
 
 Allow specific client addresses or networks:
 
@@ -263,15 +265,15 @@ Stop-Process -Id <PID> -Force
 | `--allow-ip <allow-src-ip>...` | Allow client IP addresses or CIDR networks |
 | `-l, --lhost <lhost>` | Listening host, default: `127.0.0.1` |
 | `-p, --lport <lport>` | Listening port, default: `1080` |
-| `-u, --user <username>` | Authentication username. Requires `--auth`, `--auth-file`, or `PROXLET_AUTH` |
+| `-u, --user <username>` | Authentication username. Requires `--auth`, `--auth-file`, or `PROXLET_AUTH`. Rejected by `--type fakehttp` |
 | `-a, --auth <password>` | Authentication password. Requires `--user`. Visible in process arguments; prefer `--auth-file` |
 | `--auth-file <FILE>` | Password file, mode 0600. Requires `--user`. Mutually exclusive with `--auth` and `PROXLET_AUTH` |
 | `-t, --type <type>` | Proxy type, default: `http` |
 | `--proxy <SCHEMA_URL>` | Upstream proxy URL. Prefer `--proxy-file` when the URL contains a secret |
 | `--proxy-file <FILE>` | Upstream proxy URL file, mode 0600. Mutually exclusive with `--proxy` and `PROXLET_PROXY` |
 | `--connect-timeout <SECS>` | DNS, TCP dial, and handshake timeout in seconds. Must be greater than zero. Default: `10`. Established tunnels are not idle-timed out |
-| `--aes-secret <SECRET>` | AES secret for encrypted fakehttp listener mode. Visible in process arguments; prefer `--aes-secret-file` |
-| `--aes-secret-file <FILE>` | AES secret file, mode 0600. Mutually exclusive with `--aes-secret` and `PROXLET_AES_SECRET` |
+| `--aes-secret <SECRET>` | AES secret for `--type fakehttp`. Rejected on other listener types. Visible in process arguments; prefer `--aes-secret-file` |
+| `--aes-secret-file <FILE>` | AES secret file, mode 0600. Requires `--type fakehttp`. Mutually exclusive with `--aes-secret` and `PROXLET_AES_SECRET` |
 | `--max-frame-size <KB>` | fakehttp encrypted frame payload size in KiB: `8`, `16`, `32`, or `64`; default: `16` |
 | `--proxy-ca <FILE>` | CA certificate bundle for an HTTPS upstream proxy. Requires `--proxy`, `--proxy-file`, or `PROXLET_PROXY` |
 | `--tls-cert <FILE>` | Certificate file for HTTPS mode |

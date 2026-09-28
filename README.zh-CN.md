@@ -153,7 +153,7 @@ printf '%s\n' 'strong-password' > proxlet.auth
 proxlet --type mixed --user alice --auth-file proxlet.auth
 ```
 
-fakehttp 的 secret 同样可用 `--aes-secret-file` 或 `PROXLET_AES_SECRET`。上游 URL 若含密码，使用 `--proxy-file` 或 `PROXLET_PROXY`，避免进入进程参数。Unix 上该文件不能被同组或其他用户读取。非 Unix 构建不检查 ACL。
+`--aes-secret`、`--aes-secret-file` 和 `PROXLET_AES_SECRET` 只对 `--type fakehttp` 有效。该模式拒绝 `--user` 和 `--auth`。fakehttp 监听或 `fakehttp://` 上游没有 secret 时仍会启动，并警告隧道 payload 是明文。上游 URL 若含密码，使用 `--proxy-file` 或 `PROXLET_PROXY`，避免进入进程参数。Unix 上该文件不能被同组或其他用户读取。非 Unix 构建不检查 ACL。
 
 允许指定的客户端地址或网段：
 
@@ -245,15 +245,15 @@ Stop-Process -Id <PID> -Force
 | `--allow-ip <allow-src-ip>...` | 允许访问的客户端 IP 地址或 CIDR 网段 |
 | `-l, --lhost <lhost>` | 监听主机，默认值：`127.0.0.1` |
 | `-p, --lport <lport>` | 监听端口，默认值：`1080` |
-| `-u, --user <username>` | 认证用户名。必须同时提供 `--auth`、`--auth-file` 或 `PROXLET_AUTH` |
+| `-u, --user <username>` | 认证用户名。必须同时提供 `--auth`、`--auth-file` 或 `PROXLET_AUTH`。`--type fakehttp` 拒绝该参数 |
 | `-a, --auth <password>` | 认证密码。必须同时提供 `--user`。会出现在进程参数里，优先使用 `--auth-file` |
 | `--auth-file <FILE>` | 密码文件，mode 0600。必须同时提供 `--user`。与 `--auth` 和 `PROXLET_AUTH` 互斥 |
 | `-t, --type <type>` | 代理类型，默认值：`http` |
 | `--proxy <SCHEMA_URL>` | 上游代理 URL。URL 含 secret 时优先使用 `--proxy-file` |
 | `--proxy-file <FILE>` | 上游代理 URL 文件，mode 0600。与 `--proxy` 和 `PROXLET_PROXY` 互斥 |
 | `--connect-timeout <SECS>` | DNS、TCP 拨号和握手超时, 单位秒, 必须大于 0, 默认值: `10`. 已建立的隧道不会因此空闲断开 |
-| `--aes-secret <SECRET>` | fakehttp 监听模式使用的 AES 加密 secret。会出现在进程参数里，优先使用 `--aes-secret-file` |
-| `--aes-secret-file <FILE>` | AES secret 文件，mode 0600。与 `--aes-secret` 和 `PROXLET_AES_SECRET` 互斥 |
+| `--aes-secret <SECRET>` | 仅 `--type fakehttp` 使用的 AES secret。其他监听类型会启动失败。会出现在进程参数里，优先使用 `--aes-secret-file` |
+| `--aes-secret-file <FILE>` | AES secret 文件，mode 0600。仅 `--type fakehttp` 有效。与 `--aes-secret` 和 `PROXLET_AES_SECRET` 互斥 |
 | `--max-frame-size <KB>` | fakehttp 加密帧 payload 大小，单位 KiB，可选 `8`、`16`、`32`、`64`，默认值：`16` |
 | `--proxy-ca <FILE>` | 用于验证 HTTPS 上游代理的 CA 证书包。要求 `--proxy`、`--proxy-file` 或 `PROXLET_PROXY` |
 | `--tls-cert <FILE>` | HTTPS 模式使用的证书文件 |

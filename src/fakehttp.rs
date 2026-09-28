@@ -111,9 +111,13 @@ pub async fn serve(
     let wants_crypto = request.wants_crypto();
     let crypto_secret = match (wants_crypto, aes_secret) {
         (true, Some(secret)) => Some(secret),
-        (true, None) | (false, Some(_)) => {
+        (true, None) => {
             camouflage::write_not_found(&mut client).await?;
-            bail!("fakehttp encryption policy mismatch")
+            bail!("fakehttp client requested encryption but the listener has no AES secret")
+        }
+        (false, Some(_)) => {
+            camouflage::write_not_found(&mut client).await?;
+            bail!("fakehttp listener has an AES secret but the client did not request encryption")
         }
         (false, None) => None,
     };
@@ -280,7 +284,16 @@ pub async fn connect(
     .await?;
     let response = Response::parse(&header)?;
     if response.status_code()? != 200 {
-        bail!("fakehttp upstream rejected tunnel: {}", response.status)
+        if aes_secret.is_none() {
+            bail!(
+                "fakehttp upstream rejected tunnel: {}; the client has no AES secret",
+                response.status
+            );
+        }
+        bail!(
+            "fakehttp upstream rejected tunnel: {}; the client requested encryption",
+            response.status
+        );
     }
     if response.has_body() {
         bail!("fakehttp upstream returned a 200 response with a body");

@@ -60,7 +60,7 @@ pub struct Cli {
     )]
     pub auth_file: Option<PathBuf>,
 
-    /// Username. Requires --auth, --auth-file, or PROXLET_AUTH.
+    /// Username. Requires --auth, --auth-file, or PROXLET_AUTH. Rejected by --type fakehttp.
     #[arg(short = 'u', long = "user", value_name = "username")]
     pub username: Option<String>,
 
@@ -81,11 +81,11 @@ pub struct Cli {
     #[arg(long = "proxy-file", value_name = "FILE", conflicts_with = "proxy")]
     pub proxy_file: Option<PathBuf>,
 
-    /// AES secret for fakehttp listener encryption.
+    /// AES secret for fakehttp listener encryption. Requires --type fakehttp.
     #[arg(long, value_name = "SECRET", conflicts_with = "aes_secret_file")]
     pub aes_secret: Option<String>,
 
-    /// AES secret file, mode 0600. Mutually exclusive with --aes-secret and PROXLET_AES_SECRET.
+    /// AES secret file, mode 0600. Requires --type fakehttp. Mutually exclusive with --aes-secret and PROXLET_AES_SECRET.
     #[arg(
         long = "aes-secret-file",
         value_name = "FILE",
@@ -344,7 +344,7 @@ impl Cli {
         if self.proxy_type == ProxyType::Https && self.tls_cert.is_none() {
             bail!("--type https requires --tls-cert and --tls-key")
         }
-        self.require_upstream_for_ca()?;
+        self.check_secret_sources()?;
         let password = self.resolved_password()?;
         let aes_secret = self.resolved_aes_secret()?;
         let upstream = self.resolved_upstream()?;
@@ -495,7 +495,8 @@ impl Cli {
     ///
     /// # Errors
     ///
-    /// Returns an error from password, AES secret, or upstream resolution.
+    /// Returns an error from password, AES secret, or upstream resolution, or
+    /// when a secret is set on a listener type that ignores it.
     ///
     /// # Examples
     ///
@@ -504,9 +505,23 @@ impl Cli {
     /// ```
     pub(crate) fn check_secret_sources(&self) -> Result<()> {
         self.require_upstream_for_ca()?;
-        let _ = self.resolved_password()?;
-        let _ = self.resolved_aes_secret()?;
-        let _ = self.resolved_upstream()?;
+        let has_password = self.resolved_password()?.is_some();
+        let has_aes_secret = self.resolved_aes_secret()?.is_some();
+        crate::secret::reject_wrong_mode(
+            self.proxy_type == ProxyType::FakeHttp,
+            self.username.is_some() || has_password,
+            has_aes_secret,
+        )?;
+        let upstream = self.resolved_upstream()?;
+        // 父进程在脱离前警告. 子进程的 stderr 是状态管道, 不能在这里 eprintln.
+        if self.daemon && std::env::var_os("PROXLET_DAEMON_CHILD").is_none() {
+            crate::secret::warn_plaintext_fakehttp(
+                self.proxy_type == ProxyType::FakeHttp && !has_aes_secret,
+                upstream
+                    .as_ref()
+                    .is_some_and(crate::secret::url_is_plaintext_fakehttp),
+            );
+        }
         Ok(())
     }
 
@@ -568,32 +583,13 @@ impl Cli {
         if self.aes_secret.is_some() {
             flags.push("--aes-secret");
         }
-        if self.proxy.as_ref().is_some_and(url_has_userinfo) {
+        if self
+            .proxy
+            .as_ref()
+            .is_some_and(crate::secret::url_has_userinfo)
+        {
             flags.push("--proxy");
         }
         flags
     }
-}
-
-/// Report whether a URL carries userinfo that would be visible in argv.
-///
-/// # Parameters
-///
-/// * `url` - Upstream URL.
-///
-/// # Returns
-///
-/// Returns true when the URL has a username or password.
-///
-/// # Errors
-///
-/// This function does not return errors.
-///
-/// # Examples
-///
-/// ```ignore
-/// let leaks = url_has_userinfo(&url);
-/// ```
-fn url_has_userinfo(url: &Url) -> bool {
-    !url.username().is_empty() || url.password().is_some()
 }

@@ -66,6 +66,16 @@ pub async fn run(cli: Cli) -> Result<()> {
     } else {
         "proxlet: authentication disabled"
     });
+    if config.proxy_type == ProxyType::FakeHttp && config.aes_secret.is_none() {
+        log_line(crate::secret::PLAINTEXT_LISTENER);
+    }
+    if config
+        .upstream
+        .as_ref()
+        .is_some_and(crate::secret::url_is_plaintext_fakehttp)
+    {
+        log_line(crate::secret::PLAINTEXT_UPSTREAM);
+    }
     if config.proxy_type == ProxyType::Mixed && tls.is_none() {
         log_line("proxlet: mixed mode HTTPS listener is disabled until TLS files are provided");
     }

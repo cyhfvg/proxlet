@@ -110,6 +110,88 @@ async fn wrong_secret_handshake_is_rejected_without_dialing_the_target() -> Resu
 }
 
 #[tokio::test]
+async fn encryption_mismatch_names_the_side_missing_a_secret() -> Result<()> {
+    let listener_missing = policy_mismatch(None, Some("client-secret")).await?;
+    assert!(
+        listener_missing
+            .server
+            .contains("listener has no AES secret"),
+        "{}",
+        listener_missing.server
+    );
+    assert!(
+        listener_missing
+            .client
+            .contains("client requested encryption"),
+        "{}",
+        listener_missing.client
+    );
+    assert!(!listener_missing.server.contains("client-secret"));
+    assert!(!listener_missing.client.contains("client-secret"));
+
+    let client_missing = policy_mismatch(Some("server-secret"), None).await?;
+    assert!(
+        client_missing
+            .server
+            .contains("client did not request encryption"),
+        "{}",
+        client_missing.server
+    );
+    assert!(
+        client_missing.client.contains("client has no AES secret"),
+        "{}",
+        client_missing.client
+    );
+    assert!(!client_missing.server.contains("server-secret"));
+    assert!(!client_missing.client.contains("server-secret"));
+    Ok(())
+}
+
+async fn policy_mismatch(
+    listener_secret: Option<&'static str>,
+    client_secret: Option<&'static str>,
+) -> Result<PolicyErrors> {
+    let endpoint = Target::new("127.0.0.1", 1);
+    let target = Target::new("127.0.0.1", 1);
+    let (client_side, server_side) = tokio::io::duplex(64 * 1024);
+    let server_task = tokio::spawn(fakehttp::serve(
+        Box::new(server_side),
+        Arc::new(Connector::new(None, None)?),
+        listener_secret,
+        fakehttp::DEFAULT_MAX_FRAME_SIZE,
+    ));
+    let client_result = tokio::time::timeout(
+        HANDSHAKE_TIMEOUT,
+        fakehttp::connect(
+            Box::new(client_side),
+            &endpoint,
+            &target,
+            client_secret,
+            fakehttp::DEFAULT_MAX_FRAME_SIZE,
+            Duration::from_secs(10),
+        ),
+    )
+    .await
+    .context("policy mismatch handshake hung")?;
+    let server_result = tokio::time::timeout(HANDSHAKE_TIMEOUT, server_task)
+        .await
+        .context("policy mismatch serve hung")??;
+    let client = match client_result {
+        Err(error) => error.to_string(),
+        Ok(_) => anyhow::bail!("client mismatch was accepted"),
+    };
+    Ok(PolicyErrors {
+        server: server_result.expect_err("server mismatch").to_string(),
+        client,
+    })
+}
+
+struct PolicyErrors {
+    server: String,
+    client: String,
+}
+
+#[tokio::test]
 async fn replayed_handshake_is_rejected() -> Result<()> {
     let (origin_addr, accepts, origin_task) = counting_origin().await?;
     let endpoint = Target::new("127.0.0.1", 1);

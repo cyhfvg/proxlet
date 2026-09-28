@@ -86,6 +86,10 @@ Last updated: 2026-09-28
   files (`--auth-file`, `--aes-secret-file`, `--proxy-file`) or from
   `PROXLET_AUTH`, `PROXLET_AES_SECRET`, and `PROXLET_PROXY`. A flag that still
   puts a secret in process arguments warns at startup and does not print it.
+- An AES secret on a non-fakehttp listener, or `--user`/`--auth` on a fakehttp
+  listener, is a startup error. A fakehttp listener or upstream with no secret
+  still starts, and warns that the tunnel payload is plaintext. An encryption
+  mismatch names whether the listener or the client lacks the secret.
 - SSH upstream mode accepts server host keys directly and does not read or
   write `known_hosts`.
 - fakehttp mode uses an HTTP/1.1-looking handshake followed by a proxlet-specific

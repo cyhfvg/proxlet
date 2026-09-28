@@ -233,3 +233,35 @@ fn auth_flag_and_env_fail_without_echoing_either() {
     assert!(!text.contains("from-env-value"), "{text}");
     assert!(!text.contains("from-flag-value"), "{text}");
 }
+
+#[test]
+fn aes_secret_file_on_http_listener_fails_without_echoing_it() {
+    let port = free_port();
+    let secret = "s3cret-file-value";
+    let path = std::env::temp_dir().join(format!("proxlet-aes-wrong-{port}"));
+    write_secret(&path, secret, 0o600);
+    let output = Command::new(bin())
+        .args([
+            "--lhost",
+            "127.0.0.1",
+            "--lport",
+            &port.to_string(),
+            "--type",
+            "http",
+            "--aes-secret-file",
+            path.to_str().expect("path"),
+        ])
+        .output()
+        .expect("spawn");
+    let _ = std::fs::remove_file(&path);
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!output.status.success(), "{text}");
+    assert!(text.contains("--aes-secret"), "{text}");
+    assert!(text.contains("fakehttp"), "{text}");
+    assert!(!text.contains(secret), "{text}");
+    assert!(TcpStream::connect(("127.0.0.1", port)).is_err());
+}

@@ -146,3 +146,41 @@ async fn into_config_rejects_half_auth_without_opening_a_proxy() {
     let error = auth_only.into_config().await.expect_err("auth only");
     assert!(error.to_string().contains("--user"), "{error:#}");
 }
+
+#[tokio::test]
+async fn into_config_rejects_secret_on_the_wrong_listener_mode() {
+    let http_secret =
+        Cli::try_parse_from(["proxlet", "--type", "http", "--aes-secret", "s3cret-http"])
+            .expect("parse");
+    let error = http_secret.into_config().await.expect_err("http secret");
+    let text = error.to_string();
+    assert!(text.contains("--aes-secret"), "{text}");
+    assert!(text.contains("fakehttp"), "{text}");
+    assert!(!text.contains("s3cret-http"), "{text}");
+
+    let fakehttp_auth = Cli::try_parse_from([
+        "proxlet",
+        "--type",
+        "fakehttp",
+        "--user",
+        "alice",
+        "--auth",
+        "s3cret-auth",
+    ])
+    .expect("parse");
+    let error = fakehttp_auth
+        .into_config()
+        .await
+        .expect_err("fakehttp auth");
+    let text = error.to_string();
+    assert!(text.contains("--user"), "{text}");
+    assert!(text.contains("--aes-secret"), "{text}");
+    assert!(!text.contains("s3cret-auth"), "{text}");
+
+    let user_only =
+        Cli::try_parse_from(["proxlet", "--type", "fakehttp", "--user", "alice"]).expect("parse");
+    let error = user_only.into_config().await.expect_err("user only");
+    let text = error.to_string();
+    assert!(text.contains("does not accept"), "{text}");
+    assert!(!text.contains("--user requires --auth"), "{text}");
+}

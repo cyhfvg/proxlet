@@ -2,6 +2,8 @@
 //!
 //! File contents are never included in errors.
 
+use url::Url;
+
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -197,6 +199,156 @@ fn ensure_owner_only(_path: &Path, _file: &File) -> Result<()> {
 pub(crate) fn warn_argv_secrets(flags: &[&str]) {
     for flag in flags {
         eprintln!("proxlet: {flag} remains visible in process arguments; prefer a mode 0600 file");
+    }
+}
+
+/// Reject an AES secret or listener password used with the wrong proxy type.
+///
+/// # Parameters
+///
+/// * `fakehttp` - Whether the listener type is fakehttp.
+/// * `has_listener_auth` - Whether a username or password source is set.
+/// * `has_aes_secret` - Whether an AES secret source is set.
+///
+/// # Returns
+///
+/// Returns `Ok(())` when the secret sources match the listener type.
+///
+/// # Errors
+///
+/// Returns an error when an AES secret is set on a non-fakehttp listener, or
+/// when listener authentication is set on a fakehttp listener. The error names
+/// the flags and does not include secret values.
+///
+/// # Examples
+///
+/// ```ignore
+/// reject_wrong_mode(false, false, true)?;
+/// ```
+pub(crate) fn reject_wrong_mode(
+    fakehttp: bool,
+    has_listener_auth: bool,
+    has_aes_secret: bool,
+) -> Result<()> {
+    if has_aes_secret && !fakehttp {
+        bail!("--aes-secret requires --type fakehttp");
+    }
+    if fakehttp && has_listener_auth {
+        bail!("--type fakehttp does not accept --user or --auth; use --aes-secret");
+    }
+    Ok(())
+}
+
+/// Startup warning for a fakehttp listener that has no AES secret.
+pub(crate) const PLAINTEXT_LISTENER: &str =
+    "proxlet: fakehttp listener has no AES secret; tunnel payload is plaintext";
+
+/// Startup warning for a fakehttp upstream that has no AES secret.
+pub(crate) const PLAINTEXT_UPSTREAM: &str =
+    "proxlet: fakehttp upstream has no AES secret; tunnel payload is plaintext";
+
+/// Warn on stderr that a fakehttp role will carry plaintext.
+///
+/// # Parameters
+///
+/// * `listener_plain` - Whether the listener is fakehttp without a secret.
+/// * `upstream_plain` - Whether the upstream URL is fakehttp without a secret.
+///
+/// # Returns
+///
+/// This function does not return a value.
+///
+/// # Errors
+///
+/// This function does not return errors.
+///
+/// # Examples
+///
+/// ```ignore
+/// warn_plaintext_fakehttp(true, false);
+/// ```
+pub(crate) fn warn_plaintext_fakehttp(listener_plain: bool, upstream_plain: bool) {
+    if listener_plain {
+        eprintln!("{PLAINTEXT_LISTENER}");
+    }
+    if upstream_plain {
+        eprintln!("{PLAINTEXT_UPSTREAM}");
+    }
+}
+
+/// Report whether a URL carries userinfo that would be visible in argv.
+///
+/// # Parameters
+///
+/// * `url` - Upstream URL.
+///
+/// # Returns
+///
+/// Returns true when the URL has a username or password.
+///
+/// # Errors
+///
+/// This function does not return errors.
+///
+/// # Examples
+///
+/// ```ignore
+/// let leaks = url_has_userinfo(&url);
+/// ```
+pub(crate) fn url_has_userinfo(url: &Url) -> bool {
+    !url.username().is_empty() || url.password().is_some()
+}
+
+/// Report whether an upstream URL is an unencrypted fakehttp proxy.
+///
+/// # Parameters
+///
+/// * `url` - Upstream URL.
+///
+/// # Returns
+///
+/// Returns true when the scheme is fakehttp and no secret userinfo is present.
+///
+/// # Errors
+///
+/// This function does not return errors.
+///
+/// # Examples
+///
+/// ```ignore
+/// let plain = url_is_plaintext_fakehttp(&url);
+/// ```
+pub(crate) fn url_is_plaintext_fakehttp(url: &Url) -> bool {
+    url.scheme() == "fakehttp" && !url_has_userinfo(url)
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_aes_secret_outside_fakehttp() {
+        let error = reject_wrong_mode(false, false, true).expect_err("http secret");
+        let text = error.to_string();
+        assert!(text.contains("--aes-secret"), "{text}");
+        assert!(text.contains("fakehttp"), "{text}");
+    }
+
+    #[test]
+    fn rejects_listener_auth_on_fakehttp() {
+        let error = reject_wrong_mode(true, true, false).expect_err("fakehttp auth");
+        let text = error.to_string();
+        assert!(text.contains("--user"), "{text}");
+        assert!(text.contains("--aes-secret"), "{text}");
+    }
+
+    #[test]
+    fn plaintext_fakehttp_url_has_no_userinfo() {
+        let plain = Url::parse("fakehttp://127.0.0.1:8080").expect("url");
+        let secret = Url::parse("fakehttp://secret@127.0.0.1:8080").expect("url");
+        assert!(url_is_plaintext_fakehttp(&plain));
+        assert!(!url_is_plaintext_fakehttp(&secret));
+        assert!(url_has_userinfo(&secret));
     }
 }
 
