@@ -139,9 +139,9 @@ pub enum ProxyType {
     Http,
     /// HTTPS listener mode that wraps HTTP proxy traffic in TLS.
     Https,
-    /// SOCKS5 mode with local DNS resolution.
+    /// SOCKS5 listener. Same as socks5h; remote DNS follows the upstream URL.
     Socks5,
-    /// SOCKS5 mode with remote DNS resolution when used as an upstream.
+    /// SOCKS5 listener. Same as socks5; remote DNS follows the upstream URL.
     Socks5h,
     /// Protocol auto-detection mode for HTTP, HTTPS, and SOCKS5.
     Mixed,

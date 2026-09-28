@@ -65,7 +65,8 @@ proxlet --type fakehttp
 ```
 
 Available types are `http`, `https`, `socks5`, `socks5h`, `mixed`, and
-`fakehttp`. The default is `http`.
+`fakehttp`. The default is `http`. `socks5` and `socks5h` listeners behave the
+same. Remote DNS follows the upstream URL, not `--type`.
 
 HTTP forward-proxy requests are forwarded once and then closed. `Host` is
 rewritten to the target authority and hop-by-hop headers are not forwarded.
