@@ -40,6 +40,10 @@ fn free_port() -> u16 {
 }
 
 fn start(port: u16, extra: &[&str]) -> Daemon {
+    start_at("127.0.0.1", port, extra)
+}
+
+fn start_at(host: &str, port: u16, extra: &[&str]) -> Daemon {
     let log_file = std::env::temp_dir().join(format!("proxlet-auth-{port}.log"));
     let pid_file = std::env::temp_dir().join(format!("proxlet-auth-{port}.pid"));
     let _ = std::fs::remove_file(&log_file);
@@ -47,7 +51,7 @@ fn start(port: u16, extra: &[&str]) -> Daemon {
     let mut args = vec![
         "--daemon",
         "--lhost",
-        "127.0.0.1",
+        host,
         "--lport",
         port_text.as_str(),
         "--log-file",
@@ -153,6 +157,10 @@ fn startup_reports_whether_authentication_is_enabled() {
         open_log.contains("proxlet: authentication disabled"),
         "{open_log}"
     );
+    assert!(
+        !open_log.contains("non-loopback address without authentication"),
+        "{open_log}"
+    );
 
     let locked_port = free_port();
     let locked = start(
@@ -165,6 +173,22 @@ fn startup_reports_whether_authentication_is_enabled() {
         "{locked_log}"
     );
     assert!(!locked_log.contains("s3cret-value"), "{locked_log}");
+}
+
+#[test]
+fn non_loopback_without_protection_warns() {
+    let port = free_port();
+    let daemon = start_at("0.0.0.0", port, &[]);
+    let log = wait_log(
+        &daemon.log_file,
+        "non-loopback address without authentication",
+    );
+    assert!(
+        log.contains(
+            "proxlet: listening on a non-loopback address without authentication or --allow-ip"
+        ),
+        "{log}"
+    );
 }
 
 #[test]

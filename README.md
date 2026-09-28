@@ -8,7 +8,7 @@ proxy endpoint and optionally routing traffic through an upstream proxy.
 ## Features
 
 - Supports HTTP, HTTPS, SOCKS5, SOCKS5h, and fakehttp proxy clients.
-- Provides mixed mode for HTTP and SOCKS5 clients on the same port.
+- Provides mixed mode. Without TLS files, mixed accepts only HTTP and SOCKS5.
 - Supports upstream proxy chaining with HTTP, HTTPS, SOCKS5, SOCKS5h, fakehttp,
   and SSH.
 - Provides username/password authentication and source IP allowlists.
@@ -52,8 +52,8 @@ Accept HTTP and SOCKS5 clients on the same port:
 proxlet --type mixed --lhost 0.0.0.0 --lport 1080
 ```
 
-`mixed` accepts HTTP, SOCKS5 (`0x05`), and TLS (`0x16`) on the first byte. It
-does not accept SOCKS4.
+`mixed` accepts HTTP, SOCKS5 (`0x05`), and TLS (`0x16`) when TLS files are set.
+Without TLS files, mixed accepts only HTTP and SOCKS5. It does not accept SOCKS4.
 
 ## Usage
 

@@ -27,8 +27,8 @@ mod upstream;
 
 use protocol::establish_http_tunnel;
 use socks::open_socks5;
-use ssh::{open_ssh_channel, SshSessions};
-use upstream::{add_ca_certificates, parse_upstream, Upstream};
+use ssh::{cached_private_key, open_ssh_channel, SshSessions};
+use upstream::{add_ca_certificates, parse_upstream, SshAuthenticationMethod, Upstream};
 
 /// Async stream requirements shared by all proxlet transport implementations.
 pub trait AsyncStream: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -187,6 +187,33 @@ impl Connector {
         })
     }
 
+    /// Load an SSH private key before the listener accepts clients.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` when no SSH private key is configured or the key is cached.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the configured SSH private key cannot be loaded.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// connector.preload().await?;
+    /// ```
+    pub async fn preload(&self) -> Result<()> {
+        let Some(Upstream::Ssh(endpoint)) = &self.upstream else {
+            return Ok(());
+        };
+        let SshAuthenticationMethod::PrivateKey { path, passphrase } = &endpoint.auth.method else {
+            return Ok(());
+        };
+        let mut state = self.ssh_sessions.inner.lock().await;
+        cached_private_key(&mut state, path, passphrase.as_deref()).await?;
+        Ok(())
+    }
+
     /// Replace the DNS, TCP dial, and handshake deadline.
     ///
     /// # Parameters
@@ -314,7 +341,10 @@ impl Connector {
             "TLS handshake",
             TlsConnector::from(self.tls.clone()).connect(name, stream),
         )
-        .await?;
+        .await
+        .with_context(|| {
+            format!("TLS handshake with {host} failed; pass --proxy-ca for a private upstream CA")
+        })?;
         Ok(Box::new(stream))
     }
 }
@@ -499,6 +529,18 @@ mod tests {
     fn new_connector_defaults_to_ten_seconds() {
         let connector = Connector::new(None, None).expect("connector");
         assert_eq!(connector.connect_timeout(), Duration::from_secs(10));
+    }
+
+    #[tokio::test]
+    async fn preload_opens_a_missing_ssh_private_key() {
+        let url = Url::parse("ssh://user@127.0.0.1:22?key=/no/such/proxlet-key").expect("URL");
+        let connector = Connector::new(Some(url), None).expect("connector");
+        let error = connector.preload().await.expect_err("missing key");
+        let text = format!("{error:#}");
+        assert!(
+            text.contains("could not load SSH private key /no/such/proxlet-key"),
+            "{text}"
+        );
     }
 
     #[tokio::test]

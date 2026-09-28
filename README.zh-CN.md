@@ -8,7 +8,7 @@
 ## 特性
 
 - 支持 HTTP、HTTPS、SOCKS5、SOCKS5h 与 fakehttp 代理客户端。
-- 提供混合模式，可在同一端口接收 HTTP 与 SOCKS5 客户端连接。
+- 提供混合模式. 没有 TLS 证书文件时, mixed 只接受 HTTP 和 SOCKS5.
 - 支持通过 HTTP、HTTPS、SOCKS5、SOCKS5h、fakehttp 与 SSH 进行代理链转发。
 - 提供用户名/密码认证与来源 IP 白名单。
 - 通过内置 daemon 参数在后台运行。
@@ -51,7 +51,7 @@ proxlet
 proxlet --type mixed --lhost 0.0.0.0 --lport 1080
 ```
 
-`mixed` 按首字节接受 HTTP、SOCKS5（`0x05`）和 TLS（`0x16`）。不接受 SOCKS4。
+`mixed` 在配置 TLS 文件时按首字节接受 HTTP、SOCKS5（`0x05`）和 TLS（`0x16`）. 没有 TLS 证书文件时, mixed 只接受 HTTP 和 SOCKS5. 不接受 SOCKS4.
 
 ## 使用方法
 

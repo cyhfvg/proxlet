@@ -143,7 +143,7 @@ pub enum ProxyType {
     Socks5,
     /// SOCKS5 listener. Same as socks5; remote DNS follows the upstream URL.
     Socks5h,
-    /// Protocol auto-detection mode for HTTP, HTTPS, and SOCKS5.
+    /// Without TLS files, mixed accepts only HTTP and SOCKS5.
     Mixed,
     /// HTTP-shaped tunnel mode for proxlet-to-proxlet links.
     #[value(name = "fakehttp")]

@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{self, BufReader};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use percent_encoding::percent_decode_str;
 use tokio_rustls::rustls::RootCertStore;
 use url::Url;
@@ -125,6 +125,15 @@ pub(super) fn add_ca_certificates(roots: &mut RootCertStore, path: &Path) -> Res
 /// Returns an error when the URL is missing host or port information, uses an
 /// unsupported scheme, has malformed credentials, or has invalid SSH options.
 pub(super) fn parse_upstream(url: Url) -> Result<Upstream> {
+    if !matches!(
+        url.scheme(),
+        "http" | "https" | "socks5" | "socks5h" | "fakehttp" | "ssh"
+    ) {
+        bail!(
+            "unsupported upstream proxy scheme: {}; expected http, https, socks5, socks5h, fakehttp, or ssh",
+            url.scheme()
+        );
+    }
     let target = Target::new(
         url.host_str()
             .ok_or_else(|| anyhow::anyhow!("upstream proxy URL has no host"))?,
@@ -150,7 +159,7 @@ pub(super) fn parse_upstream(url: Url) -> Result<Upstream> {
             aes_secret: fakehttp_secret(&url)?,
         }),
         "ssh" => Ok(Upstream::Ssh(parse_ssh_upstream(target, &url)?)),
-        schema => bail!("unsupported upstream proxy scheme: {schema}"),
+        schema => bail!("unsupported upstream proxy scheme: {schema}; expected http, https, socks5, socks5h, fakehttp, or ssh"),
     }
 }
 
@@ -326,7 +335,11 @@ fn ssh_identity_path(url: &Url) -> Result<Option<PathBuf>> {
 ///
 /// This function does not return errors.
 fn non_empty(value: String) -> Option<String> {
-    if value.is_empty() { None } else { Some(value) }
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 /// Percent-decode a URL component into UTF-8 text.
@@ -377,6 +390,16 @@ mod tests {
     fn accepts_ssh_upstream_url() {
         let url = Url::parse("ssh://user:password@localhost:22").expect("URL");
         assert!(matches!(parse_upstream(url), Ok(Upstream::Ssh(_))));
+    }
+
+    #[test]
+    fn unsupported_scheme_lists_allowed_values() {
+        let url = Url::parse("ftp://localhost:21").expect("URL");
+        let error = parse_upstream(url).expect_err("scheme").to_string();
+        assert!(
+            error.contains("expected http, https, socks5, socks5h, fakehttp, or ssh"),
+            "{error}"
+        );
     }
 
     #[test]

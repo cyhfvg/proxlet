@@ -5,14 +5,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use russh::client;
 use russh::keys::{Algorithm, HashAlg, PrivateKeyWithHashAlg};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
 use super::upstream::{SshAuthenticationMethod, SshEndpoint};
-use super::{BoxStream, Target, with_timeout};
+use super::{with_timeout, BoxStream, Target};
 
 #[derive(Clone)]
 /// SSH client handler used for upstream sessions.
@@ -47,10 +47,10 @@ impl client::Handler for SshHandler {
 /// One connector has one SSH upstream. Channel opens share the authenticated
 /// session. A dropped session is replaced on the next connect.
 pub(super) struct SshSessions {
-    inner: Mutex<SshState>,
+    pub(super) inner: Mutex<SshState>,
 }
 
-struct SshState {
+pub(super) struct SshState {
     handle: Option<client::Handle<SshHandler>>,
     key: Option<CachedPrivateKey>,
 }
@@ -214,7 +214,7 @@ where
     Ok(session)
 }
 
-async fn cached_private_key(
+pub(super) async fn cached_private_key(
     state: &mut SshState,
     path: &Path,
     passphrase: Option<&str>,

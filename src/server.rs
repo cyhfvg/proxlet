@@ -9,11 +9,11 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{bail, Context as _, Result};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
-use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls::ServerConfig;
+use tokio_rustls::TlsAcceptor;
 
 use crate::cli::{Cli, Config, ProxyType};
 use crate::connector::Connector;
@@ -50,6 +50,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         )?
         .with_connect_timeout(config.connect_timeout),
     );
+    connector.preload().await?;
     let tls = load_tls(&config)?;
     let listener = TcpListener::bind(config.listen)
         .await
@@ -66,6 +67,11 @@ pub async fn run(cli: Cli) -> Result<()> {
     } else {
         "proxlet: authentication disabled"
     });
+    if !local.ip().is_loopback() && config.auth.is_none() && config.allowed_ips.is_empty() {
+        log_line(
+            "proxlet: listening on a non-loopback address without authentication or --allow-ip",
+        );
+    }
     if config.proxy_type == ProxyType::FakeHttp && config.aes_secret.is_none() {
         log_line(crate::secret::PLAINTEXT_LISTENER);
     }
@@ -77,7 +83,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         log_line(crate::secret::PLAINTEXT_UPSTREAM);
     }
     if config.proxy_type == ProxyType::Mixed && tls.is_none() {
-        log_line("proxlet: mixed mode HTTPS listener is disabled until TLS files are provided");
+        log_line("proxlet: without TLS files, mixed accepts only HTTP and SOCKS5");
     }
     crate::daemon::report_ready(local)?;
 
@@ -287,15 +293,26 @@ fn load_tls(config: &Config) -> Result<Option<TlsAcceptor>> {
     let mut cert_reader = BufReader::new(
         File::open(cert_path).with_context(|| format!("could not open {}", cert_path.display()))?,
     );
-    let certs = rustls_pemfile::certs(&mut cert_reader).collect::<io::Result<Vec<_>>>()?;
+    let certs = rustls_pemfile::certs(&mut cert_reader)
+        .collect::<io::Result<Vec<_>>>()
+        .with_context(|| format!("could not read {}", cert_path.display()))?;
     if certs.is_empty() {
-        bail!("TLS certificate file contains no certificates")
+        bail!(
+            "TLS certificate file contains no certificates: {}",
+            cert_path.display()
+        )
     }
     let mut key_reader = BufReader::new(
         File::open(key_path).with_context(|| format!("could not open {}", key_path.display()))?,
     );
-    let key = rustls_pemfile::private_key(&mut key_reader)?
-        .ok_or_else(|| anyhow::anyhow!("TLS key file contains no private key"))?;
+    let key = rustls_pemfile::private_key(&mut key_reader)
+        .with_context(|| format!("could not read {}", key_path.display()))?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "TLS key file contains no private key: {}",
+                key_path.display()
+            )
+        })?;
     let server = ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, key)?;
