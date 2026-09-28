@@ -31,6 +31,10 @@ Last updated: 2026-09-28
   listening, then prints the listen address and PID. `--log-file` and
   `--pid-file` require `--daemon`; without `--log-file`, child logs are
   discarded. A failed start exits non-zero and does not leave a listener.
+- Listener attempts write one access line to stdout:
+  `access <time> <client-ip> <protocol> <target> <result>`. Authentication
+  failures are included. Usernames, passwords, and authorization headers are
+  not. Daemon `--log-file` captures these lines.
 - Implemented SSH transport chaining for URLs such as
   `ssh://username:password@127.0.0.1:22`, using SSH `direct-tcpip`
   forwarding and direct trust of upstream SSH host keys.

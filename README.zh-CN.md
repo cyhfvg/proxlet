@@ -168,6 +168,16 @@ proxlet --allow-ip '127.0.0.1/8'
 `--log-file` 和 `--pid-file` 都要求同时使用 `--daemon`。没有 `--log-file`
 时，子进程日志会被丢弃。pid 文件只在监听成功后写入。
 
+每次监听尝试还会向 stdout 写一行访问日志，`--log-file` 会一并收下:
+
+```text
+access <UTC 时间> <客户端 IP> <协议> <目标> <结果>
+```
+
+`result` 为 `ok`、`auth-failed`、`rejected`、`bad-request`、`not-proxy` 或
+`error`。这一行包含客户端 IP 和目标，不包含用户名、密码或
+`Proxy-Authorization`。没有目标时写 `-`。
+
 ```bash
 proxlet --daemon --type mixed --lport 1080 --log-file proxlet.log --pid-file proxlet.pid
 ```

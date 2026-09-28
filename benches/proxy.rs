@@ -81,10 +81,17 @@ async fn http_round_trip() -> Result<Vec<u8>> {
     let (origin_addr, origin_task) = start_http_origin(b"OK").await?;
     let (mut caller, proxy_client) = tokio::io::duplex(64 * 1024);
     let connector = Arc::new(Connector::new(None, None)?);
-    let proxy_task =
-        tokio::spawn(
-            async move { http::serve(Box::new(proxy_client), &[], connector, None).await },
-        );
+    let proxy_task = tokio::spawn(async move {
+        http::serve(
+            Box::new(proxy_client),
+            &[],
+            connector,
+            None,
+            std::net::Ipv4Addr::LOCALHOST.into(),
+            "http",
+        )
+        .await
+    });
 
     caller
         .write_all(
@@ -119,10 +126,17 @@ async fn socks5_round_trip() -> Result<Vec<u8>> {
     let (origin_addr, origin_task) = start_echo_origin(b"world").await?;
     let (mut caller, proxy_client) = tokio::io::duplex(64 * 1024);
     let connector = Arc::new(Connector::new(None, None)?);
-    let proxy_task =
-        tokio::spawn(
-            async move { socks::serve(Box::new(proxy_client), None, connector, None).await },
-        );
+    let proxy_task = tokio::spawn(async move {
+        socks::serve(
+            Box::new(proxy_client),
+            None,
+            connector,
+            None,
+            std::net::Ipv4Addr::LOCALHOST.into(),
+            "socks5",
+        )
+        .await
+    });
 
     caller.write_all(&[0x05, 0x01, 0x00]).await?;
     let mut method = [0_u8; 2];

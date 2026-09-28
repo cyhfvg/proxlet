@@ -3,7 +3,7 @@
 //! This module handles SOCKS5 CONNECT requests, optional username/password
 //! authentication, target address parsing, and bidirectional relaying.
 
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
@@ -20,6 +20,8 @@ use crate::connector::{BoxStream, Connector, Target, relay, with_timeout};
 /// * `first_byte` - Optional first byte already read by mixed-mode detection.
 /// * `connector` - Connector used to reach the requested target.
 /// * `auth` - Optional listener username/password credentials.
+/// * `peer` - Client IP recorded in the access log. The password is never logged.
+/// * `protocol` - Access-log protocol token, usually `socks5`.
 ///
 /// # Returns
 ///
@@ -34,9 +36,11 @@ pub async fn serve(
     first_byte: Option<u8>,
     connector: Arc<Connector>,
     auth: Option<&Auth>,
+    peer: IpAddr,
+    protocol: &str,
 ) -> Result<()> {
     let timeout = connector.connect_timeout();
-    let target = with_timeout(timeout, "SOCKS handshake", async {
+    let target = match with_timeout(timeout, "SOCKS handshake", async {
         let version = match first_byte {
             Some(byte) => byte,
             None => read_u8(&mut client).await?,
@@ -47,16 +51,34 @@ pub async fn serve(
         authenticate(&mut client, auth).await?;
         read_request(&mut client).await
     })
-    .await?;
+    .await
+    {
+        Ok(target) => target,
+        Err(error) => {
+            let result = if error.to_string().contains("authentication") {
+                "auth-failed"
+            } else {
+                "bad-request"
+            };
+            crate::access::record(peer, protocol, None, result);
+            return Err(error);
+        }
+    };
+    let logged = target.authority();
     let remote = match connector.connect(&target).await {
         Ok(remote) => remote,
         Err(error) => {
             let _ = with_timeout(timeout, "SOCKS reply", write_reply(&mut client, 0x04)).await;
+            crate::access::record(peer, protocol, Some(&logged), "error");
             return Err(error);
         }
     };
     with_timeout(timeout, "SOCKS reply", write_reply(&mut client, 0x00)).await?;
-    relay(client, remote).await?;
+    if let Err(error) = relay(client, remote).await {
+        crate::access::record(peer, protocol, Some(&logged), "error");
+        return Err(error.into());
+    }
+    crate::access::record(peer, protocol, Some(&logged), "ok");
     Ok(())
 }
 

@@ -12,6 +12,8 @@ pub mod camouflage;
 /// Command-line parsing and runtime configuration.
 pub mod cli;
 
+/// Access log lines written to stdout.
+pub mod access;
 /// Upstream connection management and bidirectional relay helpers.
 pub mod connector;
 /// Background process launching support.

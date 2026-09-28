@@ -6,6 +6,7 @@
 
 mod forward;
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
@@ -28,6 +29,8 @@ pub(super) const MAX_HEADER_SIZE: usize = 64 * 1024;
 /// * `initial` - Bytes already read by mixed-mode protocol detection.
 /// * `connector` - Connector used to reach the target or upstream proxy.
 /// * `auth` - Optional listener Basic authentication credentials.
+/// * `peer` - Client IP recorded in the access log. The password is never logged.
+/// * `protocol` - Access-log protocol token, such as `http` or `https`.
 ///
 /// # Returns
 ///
@@ -42,13 +45,15 @@ pub(super) const MAX_HEADER_SIZE: usize = 64 * 1024;
 /// # Examples
 ///
 /// ```ignore
-/// http::serve(client, &[], connector, None).await?;
+/// http::serve(client, &[], connector, None, peer, "http").await?;
 /// ```
 pub async fn serve(
     mut client: BoxStream,
     initial: &[u8],
     connector: Arc<Connector>,
     auth: Option<&Auth>,
+    peer: IpAddr,
+    protocol: &str,
 ) -> Result<()> {
     let header = match with_timeout(
         connector.connect_timeout(),
@@ -59,6 +64,8 @@ pub async fn serve(
     {
         Ok(header) => header,
         Err(_) => {
+            // 客户端仍回伪装 404. 服务端只记失败, 不记原始头.
+            crate::access::record(peer, protocol, None, "bad-request");
             let _ = camouflage::write_not_found(&mut client).await;
             return Ok(());
         }
@@ -66,6 +73,7 @@ pub async fn serve(
     let request = match Request::parse(&header) {
         Ok(request) => request,
         Err(_) => {
+            crate::access::record(peer, protocol, None, "bad-request");
             camouflage::write_not_found(&mut client).await?;
             return Ok(());
         }
@@ -73,10 +81,14 @@ pub async fn serve(
     // nmap GetRequest/HTTPOptions use origin-form paths such as `GET /`.
     // Answer those as a normal web server instead of leaking proxy errors.
     if !request.is_proxy_request() {
+        crate::access::record(peer, protocol, None, "not-proxy");
         camouflage::write_not_found(&mut client).await?;
         return Ok(());
     }
     if !request.is_authorized(auth) {
+        let target = request.target().ok().map(|target| target.authority());
+        // 先落日志再回 407, 避免客户端先看到响应而日志还在缓冲里.
+        crate::access::record(peer, protocol, target.as_deref(), "auth-failed");
         with_timeout(
             connector.connect_timeout(),
             "proxy authentication response",
@@ -90,11 +102,19 @@ pub async fn serve(
         return Ok(());
     }
 
-    let target = request.target()?;
+    let target = match request.target() {
+        Ok(target) => target,
+        Err(error) => {
+            crate::access::record(peer, protocol, None, "bad-request");
+            return Err(error);
+        }
+    };
+    let logged = target.authority();
     let mut remote = match connector.connect(&target).await {
         Ok(remote) => remote,
         Err(error) => {
             camouflage::write_service_unavailable(&mut client).await?;
+            crate::access::record(peer, protocol, Some(&logged), "error");
             return Err(error);
         }
     };
@@ -106,14 +126,24 @@ pub async fn serve(
             client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n"),
         )
         .await?;
-        relay(client, remote).await?;
+        if let Err(error) = relay(client, remote).await {
+            crate::access::record(peer, protocol, Some(&logged), "error");
+            return Err(error.into());
+        }
+        crate::access::record(peer, protocol, Some(&logged), "ok");
         return Ok(());
     }
 
     // 不 relay. 流水线里的下一个请求必须留在客户端, 不能拷到第一个 origin.
     // drop 不会发送 TLS close_notify, 客户端 read_to_end 会报 unexpected eof.
-    let origin_header = request.origin_form_header()?;
-    forward::exchange(
+    let origin_header = match request.origin_form_header() {
+        Ok(header) => header,
+        Err(error) => {
+            crate::access::record(peer, protocol, Some(&logged), "error");
+            return Err(error);
+        }
+    };
+    if let Err(error) = forward::exchange(
         &mut client,
         &mut remote,
         &request.method,
@@ -121,9 +151,14 @@ pub async fn serve(
         &origin_header,
         connector.connect_timeout(),
     )
-    .await?;
+    .await
+    {
+        crate::access::record(peer, protocol, Some(&logged), "error");
+        return Err(error);
+    }
     client.shutdown().await?;
     remote.shutdown().await?;
+    crate::access::record(peer, protocol, Some(&logged), "ok");
     Ok(())
 }
 

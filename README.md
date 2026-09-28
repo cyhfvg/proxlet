@@ -178,6 +178,17 @@ and does not leave a listening process behind.
 child logs are discarded. The pid file is written only after the listener is
 bound.
 
+Each listener attempt also writes one access line to stdout, which
+`--log-file` captures:
+
+```text
+access <UTC time> <client-ip> <protocol> <target> <result>
+```
+
+`result` is `ok`, `auth-failed`, `rejected`, `bad-request`, `not-proxy`, or
+`error`. The line has the client IP and target. It never includes the
+username, password, or `Proxy-Authorization` value. A missing target is `-`.
+
 ```bash
 proxlet --daemon --type mixed --lport 1080 --log-file proxlet.log --pid-file proxlet.pid
 ```

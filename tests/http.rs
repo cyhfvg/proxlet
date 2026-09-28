@@ -25,7 +25,15 @@ async fn forwards_http_request_to_an_origin_server() {
     let (mut caller, proxy_client) = tokio::io::duplex(4096);
     let connector = Arc::new(Connector::new(None, None).expect("connector"));
     let proxy_task = tokio::spawn(async move {
-        proxlet::http::serve(Box::new(proxy_client), &[], connector, None).await
+        proxlet::http::serve(
+            Box::new(proxy_client),
+            &[],
+            connector,
+            None,
+            std::net::Ipv4Addr::LOCALHOST.into(),
+            "http",
+        )
+        .await
     });
     caller
         .write_all(
@@ -51,7 +59,15 @@ async fn origin_form_scanner_probe_receives_nginx_not_found() {
     let (mut caller, proxy_client) = tokio::io::duplex(4096);
     let connector = Arc::new(Connector::new(None, None).expect("connector"));
     let proxy_task = tokio::spawn(async move {
-        proxlet::http::serve(Box::new(proxy_client), &[], connector, None).await
+        proxlet::http::serve(
+            Box::new(proxy_client),
+            &[],
+            connector,
+            None,
+            std::net::Ipv4Addr::LOCALHOST.into(),
+            "http",
+        )
+        .await
     });
     caller
         .write_all(b"GET / HTTP/1.0\r\n\r\n")
@@ -133,7 +149,15 @@ async fn pipelined_second_request_stays_off_the_first_origin() {
     let (mut caller, proxy_client) = tokio::io::duplex(8192);
     let connector = Arc::new(Connector::new(None, None).expect("connector"));
     let proxy_task = tokio::spawn(async move {
-        proxlet::http::serve(Box::new(proxy_client), &[], connector, None).await
+        proxlet::http::serve(
+            Box::new(proxy_client),
+            &[],
+            connector,
+            None,
+            std::net::Ipv4Addr::LOCALHOST.into(),
+            "http",
+        )
+        .await
     });
     caller
         .write_all(

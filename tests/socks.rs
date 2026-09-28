@@ -18,7 +18,15 @@ async fn connects_and_relays_socks5_traffic() {
     let (mut caller, proxy_client) = tokio::io::duplex(4096);
     let connector = Arc::new(Connector::new(None, None).expect("connector"));
     let proxy_task = tokio::spawn(async move {
-        proxlet::socks::serve(Box::new(proxy_client), None, connector, None).await
+        proxlet::socks::serve(
+            Box::new(proxy_client),
+            None,
+            connector,
+            None,
+            std::net::Ipv4Addr::LOCALHOST.into(),
+            "socks5",
+        )
+        .await
     });
 
     caller.write_all(&[0x05, 0x01, 0x00]).await.expect("hello");

@@ -84,14 +84,14 @@ pub async fn run(cli: Cli) -> Result<()> {
                 .iter()
                 .any(|allowed| allowed.contains(&peer.ip()))
         {
-            log_line(format!("proxlet: rejected connection from {}", peer.ip()));
+            crate::access::record(peer.ip(), "-", None, "rejected");
             continue;
         }
         let config = config.clone();
         let connector = connector.clone();
         let tls = tls.clone();
         tokio::spawn(async move {
-            if let Err(error) = serve_client(stream, config, connector, tls).await {
+            if let Err(error) = serve_client(stream, peer.ip(), config, connector, tls).await {
                 log_line(format!(
                     "proxlet: connection from {} failed: {error:#}",
                     peer.ip()
@@ -106,6 +106,7 @@ pub async fn run(cli: Cli) -> Result<()> {
 /// # Parameters
 ///
 /// * `stream` - Accepted TCP client stream.
+/// * `peer` - Client IP recorded in the access log.
 /// * `config` - Shared runtime configuration.
 /// * `connector` - Shared upstream connector.
 /// * `tls` - Optional TLS acceptor for HTTPS listener or mixed TLS detection.
@@ -120,13 +121,22 @@ pub async fn run(cli: Cli) -> Result<()> {
 /// configuration, or traffic relay.
 async fn serve_client(
     stream: TcpStream,
+    peer: std::net::IpAddr,
     config: Arc<Config>,
     connector: Arc<Connector>,
     tls: Option<TlsAcceptor>,
 ) -> Result<()> {
     match config.proxy_type {
         ProxyType::Http => {
-            http::serve(Box::new(stream), &[], connector, config.auth.as_ref()).await
+            http::serve(
+                Box::new(stream),
+                &[],
+                connector,
+                config.auth.as_ref(),
+                peer,
+                "http",
+            )
+            .await
         }
         ProxyType::Https => {
             let tls = tls.ok_or_else(|| anyhow::anyhow!("TLS listener is not configured"))?;
@@ -136,20 +146,39 @@ async fn serve_client(
                 tls.accept(stream),
             )
             .await?;
-            http::serve(Box::new(stream), &[], connector, config.auth.as_ref()).await
+            http::serve(
+                Box::new(stream),
+                &[],
+                connector,
+                config.auth.as_ref(),
+                peer,
+                "https",
+            )
+            .await
         }
         ProxyType::Socks5 | ProxyType::Socks5h => {
-            socks::serve(Box::new(stream), None, connector, config.auth.as_ref()).await
+            socks::serve(
+                Box::new(stream),
+                None,
+                connector,
+                config.auth.as_ref(),
+                peer,
+                "socks5",
+            )
+            .await
         }
-        ProxyType::Mixed => serve_mixed(stream, connector, config.auth.as_ref(), tls).await,
+        ProxyType::Mixed => serve_mixed(stream, peer, connector, config.auth.as_ref(), tls).await,
         ProxyType::FakeHttp => {
-            fakehttp::serve(
+            let result = fakehttp::serve(
                 Box::new(stream),
                 connector,
                 config.aes_secret.as_deref(),
                 config.max_frame_size,
             )
-            .await
+            .await;
+            let outcome = if result.is_ok() { "ok" } else { "error" };
+            crate::access::record(peer, "fakehttp", None, outcome);
+            result
         }
     }
 }
@@ -159,7 +188,7 @@ async fn serve_client(
 /// # Parameters
 ///
 /// * `stream` - Accepted TCP stream.
-/// * `connector` - Shared upstream connector.
+/// * `peer` - Client IP recorded in the access log.
 /// * `auth` - Optional listener authentication credentials.
 /// * `tls` - Optional TLS acceptor used for HTTPS-looking clients.
 ///
@@ -173,6 +202,7 @@ async fn serve_client(
 /// configured, TLS acceptance fails, or the selected protocol handler fails.
 async fn serve_mixed(
     mut stream: TcpStream,
+    peer: std::net::IpAddr,
     connector: Arc<Connector>,
     auth: Option<&crate::cli::Auth>,
     tls: Option<TlsAcceptor>,
@@ -187,7 +217,17 @@ async fn serve_mixed(
     // Mixed mode uses the first byte only for dispatch, then replays it through
     // PrefixStream for protocols that still need to consume it.
     match first[0] {
-        0x05 => socks::serve(Box::new(stream), Some(0x05), connector, auth).await,
+        0x05 => {
+            socks::serve(
+                Box::new(stream),
+                Some(0x05),
+                connector,
+                auth,
+                peer,
+                "socks5",
+            )
+            .await
+        }
         0x16 => {
             let tls = tls.ok_or_else(|| {
                 anyhow::anyhow!("received a TLS client connection but TLS files are not configured")
@@ -198,9 +238,9 @@ async fn serve_mixed(
                 tls.accept(PrefixStream::new(first.to_vec(), stream)),
             )
             .await?;
-            http::serve(Box::new(stream), &[], connector, auth).await
+            http::serve(Box::new(stream), &[], connector, auth, peer, "https").await
         }
-        byte => http::serve(Box::new(stream), &[byte], connector, auth).await,
+        byte => http::serve(Box::new(stream), &[byte], connector, auth, peer, "http").await,
     }
 }
 
