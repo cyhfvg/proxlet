@@ -189,7 +189,8 @@ proxlet --proxy 'https://relay:strong-password@192.0.2.10:1080' \
 Enable authentication with a username plus one password source. Providing only
 the username, or only a password source, is an error. `--auth` still works,
 but the password remains visible in process arguments and startup warns about
-that. Prefer a mode 0600 file or `PROXLET_AUTH`:
+that. The HTTP `Basic` scheme is ASCII case-insensitive. Listener usernames
+and passwords are compared in constant time. Prefer a mode 0600 file or `PROXLET_AUTH`:
 
 ```bash
 install -m 600 /dev/null proxlet.auth

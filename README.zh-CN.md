@@ -162,7 +162,7 @@ proxlet --proxy 'https://relay:strong-password@192.0.2.10:1080' \
 
 ### 限制访问
 
-同时指定用户名和一个密码来源即可启用认证。只给用户名，或只给密码来源，会启动失败。`--auth` 仍可用，但密码会出现在进程参数里，启动时会警告这一点。优先使用 mode 0600 的文件或 `PROXLET_AUTH`：
+同时指定用户名和一个密码来源即可启用认证。只给用户名，或只给密码来源，会启动失败。`--auth` 仍可用，但密码会出现在进程参数里，启动时会警告这一点。HTTP `Basic` 方案名不区分 ASCII 大小写。监听端用户名和口令使用常量时间比较。优先使用 mode 0600 的文件或 `PROXLET_AUTH`：
 
 ```bash
 install -m 600 /dev/null proxlet.auth

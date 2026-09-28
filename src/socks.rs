@@ -6,11 +6,11 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::cli::Auth;
-use crate::connector::{BoxStream, Connector, Target, relay, with_timeout};
+use crate::connector::{relay, with_timeout, BoxStream, Connector, Target};
 
 /// Serve one SOCKS5 client connection.
 ///
@@ -116,9 +116,11 @@ async fn authenticate(client: &mut BoxStream, auth: Option<&Auth>) -> Result<()>
         }
         let username = read_counted_bytes(client).await?;
         let password = read_counted_bytes(client).await?;
-        if username.as_slice() != auth.username.as_bytes()
-            || password.as_slice() != auth.password.as_bytes()
-        {
+        let user_ok =
+            crate::secret::constant_time_eq(username.as_slice(), auth.username.as_bytes());
+        let pass_ok =
+            crate::secret::constant_time_eq(password.as_slice(), auth.password.as_bytes());
+        if !user_ok || !pass_ok {
             client.write_all(&[0x01, 0x01]).await?;
             bail!("SOCKS5 authentication failed");
         }
@@ -258,7 +260,11 @@ fn socks_connect_reply(error: &anyhow::Error) -> u8 {
             .downcast_ref::<std::io::Error>()
             .is_some_and(|io_error| io_error.kind() == std::io::ErrorKind::ConnectionRefused)
     });
-    if refused { 0x05 } else { 0x04 }
+    if refused {
+        0x05
+    } else {
+        0x04
+    }
 }
 
 /// Read one byte from a SOCKS stream.

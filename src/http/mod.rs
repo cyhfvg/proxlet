@@ -9,15 +9,13 @@ mod forward;
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use anyhow::{Result, bail};
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64;
+use anyhow::{bail, Result};
 use tokio::io::AsyncWriteExt;
 use url::Url;
 
 use crate::camouflage;
 use crate::cli::Auth;
-use crate::connector::{BoxStream, Connector, Target, relay, with_timeout};
+use crate::connector::{relay, with_timeout, BoxStream, Connector, Target};
 
 pub(super) const MAX_HEADER_SIZE: usize = 64 * 1024;
 
@@ -319,12 +317,9 @@ impl Request {
         let Some(auth) = auth else {
             return true;
         };
-        let expected = BASE64.encode(format!("{}:{}", auth.username, auth.password));
         self.headers.iter().any(|(name, value)| {
             name.eq_ignore_ascii_case("Proxy-Authorization")
-                && value
-                    .strip_prefix("Basic ")
-                    .is_some_and(|provided| provided == expected)
+                && crate::secret::basic_authorization_matches(value, &auth.username, &auth.password)
         })
     }
 
@@ -570,7 +565,11 @@ mod tests {
         assert!(text.contains("control character"), "{text}");
         assert!(!text.contains("evil"), "{text}");
         let bare = Request::parse(b"CONNECT 2001:db8::1:443 HTTP/1.1\r\n\r\n").expect("line");
-        assert!(bare.target().expect_err("bare").to_string().contains("unbracketed IPv6"));
+        assert!(bare
+            .target()
+            .expect_err("bare")
+            .to_string()
+            .contains("unbracketed IPv6"));
     }
 
     #[tokio::test]

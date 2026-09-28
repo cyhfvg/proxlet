@@ -8,7 +8,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 
 /// Read one secret line from an owner-only file.
 ///
@@ -322,6 +322,103 @@ pub(crate) fn url_is_plaintext_fakehttp(url: &Url) -> bool {
     url.scheme() == "fakehttp" && !url_has_userinfo(url)
 }
 
+/// Compare two secrets without returning at the first mismatched byte.
+///
+/// # Parameters
+///
+/// * `left` - Provided secret bytes.
+/// * `right` - Expected secret bytes.
+///
+/// # Returns
+///
+/// Returns `true` only when both slices have the same length and the same
+/// bytes. Different lengths return `false` immediately.
+///
+/// # Errors
+///
+/// This function does not return errors.
+///
+/// # Examples
+///
+/// ```text
+/// constant_time_eq(b"secret", b"secret") -> true
+/// constant_time_eq(b"secreX", b"secret") -> false
+/// ```
+
+pub(crate) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    use subtle::ConstantTimeEq;
+    left.ct_eq(right).into()
+}
+
+/// Match an HTTP Basic credential without leaking a password prefix.
+///
+/// # Parameters
+///
+/// * `header` - `Proxy-Authorization` header value.
+/// * `username` - Expected username.
+/// * `password` - Expected password.
+///
+/// # Returns
+///
+/// Returns `true` when the scheme is `Basic` in any ASCII case, one or more
+/// spaces follow it, and the token matches `username:password` in standard
+/// Base64.
+///
+/// # Errors
+///
+/// This function does not return errors.
+///
+/// # Examples
+///
+/// ```text
+/// basic dTpw matches user u and password p
+/// Basic dTpw matches the same credentials
+/// ```
+pub(crate) fn basic_authorization_matches(header: &str, username: &str, password: &str) -> bool {
+    use base64::Engine;
+    use subtle::ConstantTimeEq;
+
+    let Some(token) = basic_token(header) else {
+        return false;
+    };
+    let expected =
+        base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"));
+    token.as_bytes().ct_eq(expected.as_bytes()).into()
+}
+
+/// Accept a Basic scheme and return its token.
+///
+/// # Parameters
+///
+/// * `header` - Raw authorization header value.
+///
+/// # Returns
+///
+/// Returns the token when the scheme is `basic` in any ASCII case and at least
+/// one space separates it from a token that contains no whitespace.
+///
+/// # Errors
+///
+/// This function does not return errors.
+///
+/// # Examples
+///
+/// ```text
+/// "BASIC dTpw" -> Some("dTpw")
+/// "Bearer dTpw" -> None
+/// ```
+fn basic_token(header: &str) -> Option<&str> {
+    let (scheme, rest) = header.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("basic") {
+        return None;
+    }
+    let token = rest.trim_start_matches(' ');
+    if token.is_empty() || token.bytes().any(|byte| byte.is_ascii_whitespace()) {
+        return None;
+    }
+    Some(token)
+}
+
 #[cfg(test)]
 mod mode_tests {
     use super::*;
@@ -340,6 +437,18 @@ mod mode_tests {
         let text = error.to_string();
         assert!(text.contains("--user"), "{text}");
         assert!(text.contains("--aes-secret"), "{text}");
+    }
+
+    #[test]
+    fn basic_scheme_is_case_insensitive_and_rejects_a_prefix() {
+        assert!(basic_authorization_matches("basic dTpw", "u", "p"));
+        assert!(basic_authorization_matches("BASIC dTpw", "u", "p"));
+        assert!(basic_authorization_matches("Basic  dTpw", "u", "p"));
+        assert!(!basic_authorization_matches("Basic dTpw", "u", "secret"));
+        assert!(!basic_authorization_matches("Bearer dTpw", "u", "p"));
+        assert!(constant_time_eq(b"secret", b"secret"));
+        assert!(!constant_time_eq(b"secreX", b"secret"));
+        assert!(!constant_time_eq(b"secret-extra", b"secret"));
     }
 
     #[test]
