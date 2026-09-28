@@ -19,6 +19,7 @@
 - [x] P1-7: 非 fakehttp 监听上的 AES secret, 以及 fakehttp 上的 `--user`/`--auth`, 启动失败; 明文 fakehttp 启动时警告; 策略不匹配写明缺的是监听端还是客户端.
 - [x] P1-14: HTTP CONNECT 拼接前拒绝 host 里的 CR, LF, NUL 和其他控制字符; 错误不回显 host.
 - [x] P1-9: SSH 上游复用已认证 session, 每个目标只开 direct-tcpip; 断线后重连. 私钥 `spawn_blocking` 加载一次并缓存. HTTPS 上游仍是每目标一条 CONNECT, TLS session 由共享 rustls `ClientConfig` 复用.
+- [x] P1-13: `socks5h` 对能解析成 `IpAddr` 的 host 发 ATYP 1 或 4; 只有域名才发 ATYP 3.
 
 结论: 有. 最严重的是 fakehttp 握手不在 AEAD 里, 改 URL 就能把已解密流量重定向. 默认 HTTP 模式在连接复用下会传错主机. 缓冲型写端进 relay 前不 flush, HTTPS 监听可能把 200 留在用户态. 效率上先改逐字节读头和 SSH 每连接握手.
 

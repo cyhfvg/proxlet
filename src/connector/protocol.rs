@@ -1,5 +1,6 @@
 //! Upstream HTTP CONNECT and SOCKS5 handshake helpers.
 
+use std::net::IpAddr;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
@@ -116,26 +117,14 @@ pub(super) async fn socks_connect(
         }
         let mut request = vec![0x05, 0x01, 0x00];
         if remote_dns {
-            let host = sized_bytes(&target.host, "target host")?;
-            request.push(0x03);
-            request.push(host.len() as u8);
-            request.extend_from_slice(host);
+            append_remote_socks_host(&mut request, &target.host)?;
         } else {
             let mut addresses =
                 tokio::net::lookup_host((target.host.as_str(), target.port)).await?;
             let address = addresses
                 .next()
                 .ok_or_else(|| anyhow::anyhow!("could not resolve {}", target.host))?;
-            match address.ip() {
-                std::net::IpAddr::V4(ip) => {
-                    request.push(0x01);
-                    request.extend_from_slice(&ip.octets());
-                }
-                std::net::IpAddr::V6(ip) => {
-                    request.push(0x04);
-                    request.extend_from_slice(&ip.octets());
-                }
-            }
+            append_socks_ip(&mut request, address.ip());
         }
         request.extend_from_slice(&target.port.to_be_bytes());
         stream.write_all(&request).await?;
@@ -151,6 +140,69 @@ pub(super) async fn socks_connect(
         Ok::<(), anyhow::Error>(())
     })
     .await
+}
+
+/// Append a socks5h destination, using an IP address type for literals.
+///
+/// # Parameters
+///
+/// * `request` - SOCKS5 CONNECT request being built.
+/// * `host` - Destination host or IP literal.
+///
+/// # Returns
+///
+/// Returns `Ok(())` after the address type and address bytes are appended.
+///
+/// # Errors
+///
+/// Returns an error when a non-IP host is longer than 255 bytes.
+///
+/// # Examples
+///
+/// ```text
+/// append_remote_socks_host(&mut request, "127.0.0.1")?;
+/// append_remote_socks_host(&mut request, "example.com")?;
+/// ```
+fn append_remote_socks_host(request: &mut Vec<u8>, host: &str) -> Result<()> {
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        append_socks_ip(request, ip);
+        return Ok(());
+    }
+    let host = sized_bytes(host, "target host")?;
+    request.push(0x03);
+    request.push(host.len() as u8);
+    request.extend_from_slice(host);
+    Ok(())
+}
+
+/// Append a SOCKS5 IPv4 or IPv6 address.
+///
+/// # Parameters
+///
+/// * `request` - SOCKS5 CONNECT request being built.
+/// * `ip` - Parsed destination address.
+///
+/// # Returns
+///
+/// Returns after the address type and address bytes are appended. This function
+/// does not fail.
+///
+/// # Examples
+///
+/// ```text
+/// append_socks_ip(&mut request, "127.0.0.1".parse().expect("ip"));
+/// ```
+fn append_socks_ip(request: &mut Vec<u8>, ip: IpAddr) {
+    match ip {
+        IpAddr::V4(ip) => {
+            request.push(0x01);
+            request.extend_from_slice(&ip.octets());
+        }
+        IpAddr::V6(ip) => {
+            request.push(0x04);
+            request.extend_from_slice(&ip.octets());
+        }
+    }
 }
 
 /// Borrow a string as SOCKS-sized bytes.
@@ -227,7 +279,7 @@ async fn read_header(stream: &mut BoxStream, limit: usize) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::AsyncReadExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[tokio::test]
     async fn connect_rejects_control_characters_before_writing() {
@@ -244,5 +296,76 @@ mod tests {
         let mut buf = [0_u8; 32];
         let n = upstream.read(&mut buf).await.expect("read");
         assert_eq!(n, 0, "rejected host must not be written");
+    }
+
+    #[tokio::test]
+    async fn socks5h_sends_ip_literals_as_addresses() {
+        let cases = [
+            ("127.0.0.1", 80, vec![0x01, 127, 0, 0, 1, 0, 80]),
+            ("::1", 443, {
+                let mut bytes = vec![0x04];
+                bytes.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+                bytes.extend_from_slice(&443u16.to_be_bytes());
+                bytes
+            }),
+            ("localhost", 9, {
+                let mut bytes = vec![0x03, b"localhost".len() as u8];
+                bytes.extend_from_slice(b"localhost");
+                bytes.extend_from_slice(&9u16.to_be_bytes());
+                bytes
+            }),
+        ];
+        for (host, port, expected) in cases {
+            let (client, upstream) = tokio::io::duplex(256);
+            let mut client: BoxStream = Box::new(client);
+            let captured = tokio::spawn(async move {
+                let mut upstream = upstream;
+                let mut greeting = [0_u8; 2];
+                upstream.read_exact(&mut greeting).await.expect("greeting");
+                let mut methods = vec![0_u8; greeting[1] as usize];
+                upstream.read_exact(&mut methods).await.expect("methods");
+                upstream.write_all(&[0x05, 0x00]).await.expect("method");
+                let mut head = [0_u8; 4];
+                upstream.read_exact(&mut head).await.expect("request");
+                let mut address = match head[3] {
+                    0x01 => vec![0_u8; 4],
+                    0x04 => vec![0_u8; 16],
+                    0x03 => {
+                        let mut length = [0_u8; 1];
+                        upstream.read_exact(&mut length).await.expect("length");
+                        let mut domain = vec![0_u8; length[0] as usize];
+                        upstream.read_exact(&mut domain).await.expect("domain");
+                        let mut encoded = vec![length[0]];
+                        encoded.extend(domain);
+                        encoded
+                    }
+                    other => panic!("unexpected address type {other}"),
+                };
+                if head[3] != 0x03 {
+                    upstream.read_exact(&mut address).await.expect("address");
+                }
+                let mut port_bytes = [0_u8; 2];
+                upstream.read_exact(&mut port_bytes).await.expect("port");
+                upstream
+                    .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                    .await
+                    .expect("reply");
+                let mut wire = vec![head[3]];
+                wire.extend(address);
+                wire.extend(port_bytes);
+                wire
+            });
+            socks_connect(
+                &mut client,
+                &Target::new(host, port),
+                None,
+                true,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{host}: {error}"));
+            let wire = captured.await.expect("capture");
+            assert_eq!(wire, expected, "{host}");
+        }
     }
 }
