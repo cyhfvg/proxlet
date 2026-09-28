@@ -356,10 +356,7 @@ impl Cli {
             (Some(_), None) => bail!("--user requires --auth"),
             (None, Some(_)) => bail!("--auth requires --user"),
         };
-        let listen = tokio::net::lookup_host((self.lhost.as_str(), self.lport))
-            .await?
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("could not resolve listen host {}", self.lhost))?;
+        let listen = crate::access::resolve_listen_address(&self.lhost, self.lport).await?;
         Ok(Config {
             listen,
             allowed_ips: self.allow_ip,

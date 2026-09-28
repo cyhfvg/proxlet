@@ -10,23 +10,25 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio_rustls::TlsConnector;
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
+use tokio_rustls::TlsConnector;
 use url::Url;
 
 use crate::fakehttp;
 
 mod protocol;
+mod socks;
 mod ssh;
 mod upstream;
 
-use protocol::{establish_http_tunnel, socks_connect};
-use ssh::{SshSessions, open_ssh_channel};
-use upstream::{Upstream, add_ca_certificates, parse_upstream};
+use protocol::establish_http_tunnel;
+use socks::open_socks5;
+use ssh::{open_ssh_channel, SshSessions};
+use upstream::{add_ca_certificates, parse_upstream, Upstream};
 
 /// Async stream requirements shared by all proxlet transport implementations.
 pub trait AsyncStream: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -266,18 +268,7 @@ impl Connector {
             Some(Upstream::Socks5 {
                 endpoint,
                 remote_dns,
-            }) => {
-                let mut stream: BoxStream = Box::new(connect_tcp(&endpoint.target, timeout).await?);
-                socks_connect(
-                    &mut stream,
-                    target,
-                    endpoint.credentials.as_ref(),
-                    *remote_dns,
-                    timeout,
-                )
-                .await?;
-                Ok(stream)
-            }
+            }) => open_socks5(endpoint, *remote_dns, target, timeout).await,
             Some(Upstream::Ssh(endpoint)) => {
                 open_ssh_channel(&self.ssh_sessions, endpoint, target, timeout).await
             }

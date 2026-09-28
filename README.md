@@ -69,9 +69,10 @@ proxlet --type fakehttp
 
 Available types are `http`, `https`, `socks5`, `socks5h`, `mixed`, and
 `fakehttp`. The default is `http`. `socks5` and `socks5h` listeners behave the
-same. Remote DNS follows the upstream URL, not `--type`. An IPv6 authority
-must be bracketed; an unbracketed address is rejected instead of using the
-default port.
+same. Remote DNS follows the upstream URL, not `--type`. `--lhost` binds the
+first resolved address and prints any unused results. An IPv6 authority must
+be bracketed; an unbracketed address is rejected instead of using the default
+port.
 
 HTTP forward-proxy requests are forwarded once and then closed. `Host` is
 rewritten to the target authority and hop-by-hop headers are not forwarded.
@@ -105,8 +106,10 @@ proxlet --proxy 'ssh://username:password@127.0.0.1:22'
 proxlet --proxy 'ssh://username@127.0.0.1:22?key=/home/username/.ssh/id_ed25519'
 ```
 
-A `socks5h` upstream sends hostnames to the upstream proxy. An IP literal is
-still sent as a SOCKS5 IPv4 or IPv6 address, not as a domain name. A SOCKS
+A `socks5h` upstream sends hostnames to the upstream proxy. A `socks5` upstream
+resolves locally and tries the next address when CONNECT is rejected. Proxy
+dial and authentication failures are not retried. An IP literal is still sent
+as a SOCKS5 IPv4 or IPv6 address, not as a domain name. A SOCKS
 upstream URL with a username and password offers only method `0x02`. A SOCKS5
 listener compares usernames and passwords as bytes. A non-UTF-8 password or
 domain gets a failure reply instead of a dropped handshake. Connection refused

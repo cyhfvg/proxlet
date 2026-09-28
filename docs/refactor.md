@@ -33,6 +33,7 @@
 - [x] P2-8: 证书脚本失败时打印 openssl stderr. README 和脚本结尾写明只分发 `proxlet-ca.pem`.
 - [x] P2-18: SSH `?key=` 保留 `+`. 空用户名有密码时报错, fakehttp secret 例外. `ssh` 默认 22, `socks5`/`socks5h` 默认 1080.
 - [x] P2-22: allow-list 比较前把 IPv4-mapped IPv6 折成 IPv4.
+- [x] P2-2: `--lhost` 只绑定第一个解析结果并警告其余地址. `socks5` 上游对拒绝的 CONNECT 按序尝试下一个地址, 失败信息带 host 和已试地址.
 
 结论: 有. 最严重的是 fakehttp 握手不在 AEAD 里, 改 URL 就能把已解密流量重定向. 默认 HTTP 模式在连接复用下会传错主机. 缓冲型写端进 relay 前不 flush, HTTPS 监听可能把 200 留在用户态. 效率上先改逐字节读头和 SSH 每连接握手.
 

@@ -66,7 +66,7 @@ proxlet --type fakehttp
 ```
 
 可选类型包括 `http`、`https`、`socks5`、`socks5h`、`mixed` 和 `fakehttp`，
-默认值为 `http`。`socks5` 和 `socks5h` 监听端行为相同。远程 DNS 只由上游 URL 决定，不由 `--type` 决定。IPv6 authority 必须加方括号；未加括号时直接拒绝，不会套默认端口。
+默认值为 `http`。`socks5` 和 `socks5h` 监听端行为相同。远程 DNS 只由上游 URL 决定，不由 `--type` 决定。`--lhost` 只绑定解析出的第一个地址，其余地址会打印但不会绑定。IPv6 authority 必须加方括号；未加括号时直接拒绝，不会套默认端口。
 
 HTTP 正向代理请求转发一次后关闭连接. `Host` 改成目标 authority, hop-by-hop
 头不转发. `CONNECT` 隧道不变. 目标 host 含控制字符时会被拒绝, 不会拼进上游 `CONNECT` 请求. 非 `CONNECT` 的 `https://` absolute-form 在拨号前返回 400, 不会向 443 写明文 HTTP.
@@ -97,7 +97,7 @@ proxlet --proxy 'ssh://username:password@127.0.0.1:22'
 proxlet --proxy 'ssh://username@127.0.0.1:22?key=/home/username/.ssh/id_ed25519'
 ```
 
-`socks5h` 上游会把主机名交给上游代理解析。IP 字面量仍按 SOCKS5 的 IPv4 或
+`socks5h` 上游会把主机名交给上游代理解析。`socks5` 上游在本地解析，CONNECT 被拒绝后尝试下一个地址。代理本身连不上或认证失败不会继续尝试。IP 字面量仍按 SOCKS5 的 IPv4 或
 IPv6 地址发送，不会被当成域名。带用户名和密码的 SOCKS 上游只提供方法 `0x02`。
 SOCKS5 监听端按字节比较用户名和密码。非 UTF-8 口令或域名会返回失败应答，而不是直接拆连接。连接被拒绝时回复 `0x05`。
 

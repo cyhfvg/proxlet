@@ -3,9 +3,9 @@
 use std::net::IpAddr;
 use std::time::Duration;
 
-use anyhow::{Result, bail};
-use base64::Engine;
+use anyhow::{bail, Result};
 use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::upstream::Credentials;
@@ -82,7 +82,7 @@ pub(super) async fn establish_http_tunnel(
 /// Returns an error when authentication, DNS resolution, request writing, or
 /// proxy response parsing fails. A selected method other than the one offered
 /// is an error and includes the method number.
-pub(super) async fn socks_connect(
+pub(crate) async fn socks_connect(
     stream: &mut BoxStream,
     target: &Target,
     credentials: Option<&Credentials>,

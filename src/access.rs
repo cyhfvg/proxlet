@@ -4,8 +4,10 @@
 //! stdout to `--log-file`. Records never include passwords or header values.
 
 use std::io::{self, Write};
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use anyhow::{anyhow, Context, Result};
 
 /// Record one listener attempt.
 ///
@@ -181,6 +183,74 @@ pub fn canonical_client_ip(ip: IpAddr) -> IpAddr {
     }
 }
 
+/// Resolve a listen host and keep the first address.
+///
+/// # Parameters
+///
+/// * `host` - Listen host from `--lhost`.
+/// * `port` - Listen port from `--lport`.
+///
+/// # Returns
+///
+/// Returns the first resolved socket address. Extra results are printed and
+/// not bound.
+///
+/// # Errors
+///
+/// Returns an error when `host` does not resolve to any address. The error
+/// includes the host.
+///
+/// # Examples
+///
+/// ```text
+/// localhost:1080 -> 127.0.0.1:1080, warning lists ::1:1080 when both exist
+/// ```
+pub(crate) async fn resolve_listen_address(host: &str, port: u16) -> Result<SocketAddr> {
+    let addresses = tokio::net::lookup_host((host, port))
+        .await
+        .with_context(|| format!("could not resolve listen host {host}"))?;
+    let (listen, unused) = choose_listen_address(addresses)
+        .ok_or_else(|| anyhow!("could not resolve listen host {host}"))?;
+    if !unused.is_empty() {
+        println!(
+            "proxlet: listen host {host} resolved to multiple addresses; using {listen}, ignoring {}",
+            unused.join(", ")
+        );
+        let _ = io::stdout().flush();
+    }
+    Ok(listen)
+}
+
+/// Keep the first listen address and list the rest.
+///
+/// # Parameters
+///
+/// * `addresses` - Resolved listen socket addresses.
+///
+/// # Returns
+///
+/// Returns the first address and the remaining addresses as text. `None` means
+/// the iterator was empty.
+///
+/// # Errors
+///
+/// This function does not return errors.
+///
+/// # Examples
+///
+/// ```text
+/// [127.0.0.1:1080, [::1]:1080] -> (127.0.0.1:1080, ["[::1]:1080"])
+/// ```
+pub(crate) fn choose_listen_address(
+    mut addresses: impl Iterator<Item = SocketAddr>,
+) -> Option<(SocketAddr, Vec<String>)> {
+    let listen = addresses.next()?;
+    Some((
+        listen,
+        addresses.map(|address| address.to_string()).collect(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,5 +273,16 @@ mod tests {
         assert!(!line.contains("s3cret"));
         assert!(line.contains("127.0.0.1 http example.com:443 auth-failed"));
         assert!(!line.contains('\n'));
+    }
+
+    #[test]
+    fn choose_listen_address_keeps_the_first_result() {
+        let first: SocketAddr = "127.0.0.1:1080".parse().expect("v4");
+        let second: SocketAddr = "[::1]:1080".parse().expect("v6");
+        let (chosen, unused) =
+            choose_listen_address([first, second].into_iter()).expect("addresses");
+        assert_eq!(chosen, first);
+        assert_eq!(unused, vec![second.to_string()]);
+        assert!(choose_listen_address(std::iter::empty()).is_none());
     }
 }

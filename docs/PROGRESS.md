@@ -127,6 +127,7 @@ Last updated: 2026-09-28
   `?key=` keeps a literal `+`. A password without a username is rejected,
   except a fakehttp secret in the password field.
 - `--allow-ip` compares an IPv4-mapped IPv6 client address as its IPv4 form.
+- `--lhost` binds the first resolved address and warns about the rest. A `socks5` upstream tries each locally resolved address after a rejected CONNECT.
 - SSH upstream mode accepts server host keys directly and does not read or
   write `known_hosts`.
 - fakehttp mode uses an HTTP/1.1-looking handshake followed by a proxlet-specific
