@@ -80,8 +80,8 @@ Last updated: 2026-09-28
   certificate and private key.
 - `mixed` mode enables its TLS/HTTPS branch only when `--tls-cert` and
   `--tls-key` are supplied; otherwise HTTP and SOCKS5 remain available.
-- Authentication is enabled only when both `--user` and `--auth` are present,
-  matching the requested CLI behavior.
+- Providing only `--user` or only `--auth` is a startup error that names the
+  missing flag. Startup logs `authentication enabled` or `authentication disabled`.
 - SSH upstream mode accepts server host keys directly and does not read or
   write `known_hosts`.
 - fakehttp mode uses an HTTP/1.1-looking handshake followed by a proxlet-specific

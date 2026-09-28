@@ -56,6 +56,11 @@ pub async fn run(cli: Cli) -> Result<()> {
         "proxlet listening on {local} as {} proxy",
         config.proxy_type
     ));
+    log_line(if config.auth.is_some() {
+        "proxlet: authentication enabled"
+    } else {
+        "proxlet: authentication disabled"
+    });
     if config.proxy_type == ProxyType::Mixed && tls.is_none() {
         log_line("proxlet: mixed mode HTTPS listener is disabled until TLS files are provided");
     }

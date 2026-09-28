@@ -41,12 +41,22 @@ pub struct Cli {
     #[arg(short = 'p', long = "lport", default_value_t = 1080)]
     pub lport: u16,
 
-    /// Password. Authentication is enabled only when both --user and --auth are set.
-    #[arg(short = 'a', long = "auth", value_name = "password")]
+    /// Password. Requires --user; providing only one of them is an error.
+    #[arg(
+        short = 'a',
+        long = "auth",
+        value_name = "password",
+        requires = "username"
+    )]
     pub password: Option<String>,
 
-    /// Username. Authentication is enabled only when both --user and --auth are set.
-    #[arg(short = 'u', long = "user", value_name = "username")]
+    /// Username. Requires --auth; providing only one of them is an error.
+    #[arg(
+        short = 'u',
+        long = "user",
+        value_name = "username",
+        requires = "password"
+    )]
     pub username: Option<String>,
 
     /// Proxy protocol accepted by the listening socket.
@@ -308,20 +318,23 @@ impl Cli {
     ///
     /// # Errors
     ///
-    /// Returns an error when HTTPS listener TLS files are incomplete, the listen
-    /// host cannot be resolved, or address resolution fails.
+    /// Returns an error when only one of --user and --auth is set, HTTPS
+    /// listener TLS files are incomplete, the listen host cannot be resolved,
+    /// or address resolution fails.
     pub async fn into_config(self) -> Result<Config> {
         if self.proxy_type == ProxyType::Https && self.tls_cert.is_none() {
             bail!("--type https requires --tls-cert and --tls-key")
         }
+        let auth = match (self.username, self.password) {
+            (Some(username), Some(password)) => Some(Auth { username, password }),
+            (None, None) => None,
+            (Some(_), None) => bail!("--user requires --auth"),
+            (None, Some(_)) => bail!("--auth requires --user"),
+        };
         let listen = tokio::net::lookup_host((self.lhost.as_str(), self.lport))
             .await?
             .next()
             .ok_or_else(|| anyhow::anyhow!("could not resolve listen host {}", self.lhost))?;
-        let auth = match (self.username, self.password) {
-            (Some(username), Some(password)) => Some(Auth { username, password }),
-            _ => None,
-        };
         Ok(Config {
             listen,
             allowed_ips: self.allow_ip,

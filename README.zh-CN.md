@@ -145,7 +145,7 @@ proxlet --proxy 'https://relay:strong-password@192.0.2.10:1080' \
 
 ### 限制访问
 
-同时指定用户名与密码即可启用认证：
+同时指定用户名与密码即可启用认证。只给其中一个会启动失败，并写明缺的是哪一个。启动日志会打印 `authentication enabled` 或 `authentication disabled`：
 
 ```bash
 proxlet --type mixed --user alice --auth 'strong-password'
@@ -244,8 +244,8 @@ Stop-Process -Id <PID> -Force
 | `--allow-ip <allow-src-ip>...` | 允许访问的客户端 IP 地址或 CIDR 网段 |
 | `-l, --lhost <lhost>` | 监听主机，默认值：`127.0.0.1` |
 | `-p, --lport <lport>` | 监听端口，默认值：`1080` |
-| `-u, --user <username>` | 认证用户名 |
-| `-a, --auth <password>` | 认证密码 |
+| `-u, --user <username>` | 认证用户名。必须同时提供 `--auth` |
+| `-a, --auth <password>` | 认证密码。必须同时提供 `--user` |
 | `-t, --type <type>` | 代理类型，默认值：`http` |
 | `--proxy <SCHEMA_URL>` | 上游代理 URL |
 | `--connect-timeout <SECS>` | DNS、TCP 拨号和握手超时, 单位秒, 必须大于 0, 默认值: `10`. 已建立的隧道不会因此空闲断开 |

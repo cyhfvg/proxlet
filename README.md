@@ -153,7 +153,9 @@ proxlet --proxy 'https://relay:strong-password@192.0.2.10:1080' \
 
 ### Restrict access
 
-Enable authentication by specifying both a username and password:
+Enable authentication by specifying both a username and password. Providing
+only one of them is an error, and the error names the missing flag. Startup
+logs `authentication enabled` or `authentication disabled`:
 
 ```bash
 proxlet --type mixed --user alice --auth 'strong-password'
@@ -255,8 +257,8 @@ Stop-Process -Id <PID> -Force
 | `--allow-ip <allow-src-ip>...` | Allow client IP addresses or CIDR networks |
 | `-l, --lhost <lhost>` | Listening host, default: `127.0.0.1` |
 | `-p, --lport <lport>` | Listening port, default: `1080` |
-| `-u, --user <username>` | Authentication username |
-| `-a, --auth <password>` | Authentication password |
+| `-u, --user <username>` | Authentication username. Requires `--auth` |
+| `-a, --auth <password>` | Authentication password. Requires `--user` |
 | `-t, --type <type>` | Proxy type, default: `http` |
 | `--proxy <SCHEMA_URL>` | Upstream proxy URL |
 | `--connect-timeout <SECS>` | DNS, TCP dial, and handshake timeout in seconds. Must be greater than zero. Default: `10`. Established tunnels are not idle-timed out |

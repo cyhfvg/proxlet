@@ -101,3 +101,34 @@ fn proxy_help_includes_uri_examples() {
     assert!(help.contains("ssh://user@host:22?key=/path/to/id_rsa"));
     assert!(help.contains("Allowed values: 8, 16, 32, 64"));
 }
+
+#[test]
+fn half_auth_flags_are_rejected() {
+    let user_only = Cli::try_parse_from(["proxlet", "--user", "alice"]).expect_err("user only");
+    let auth_only = Cli::try_parse_from(["proxlet", "--auth", "secret"]).expect_err("auth only");
+    let user_err = user_only.to_string();
+    let auth_err = auth_only.to_string();
+    assert!(
+        user_err.contains("--auth"),
+        "missing password flag not named: {user_err}"
+    );
+    assert!(
+        auth_err.contains("--user"),
+        "missing username flag not named: {auth_err}"
+    );
+}
+
+#[tokio::test]
+async fn into_config_rejects_half_auth_without_opening_a_proxy() {
+    let mut user_only =
+        Cli::try_parse_from(["proxlet", "--user", "alice", "--auth", "secret"]).expect("pair");
+    user_only.password = None;
+    let error = user_only.into_config().await.expect_err("user only");
+    assert!(error.to_string().contains("--auth"), "{error:#}");
+
+    let mut auth_only =
+        Cli::try_parse_from(["proxlet", "--user", "alice", "--auth", "secret"]).expect("pair");
+    auth_only.username = None;
+    let error = auth_only.into_config().await.expect_err("auth only");
+    assert!(error.to_string().contains("--user"), "{error:#}");
+}
