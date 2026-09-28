@@ -13,6 +13,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::{LazyLock, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
 use base64::Engine;
@@ -20,7 +21,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::camouflage;
-use crate::connector::{BoxStream, Connector, Target, relay};
+use crate::connector::{BoxStream, Connector, Target, relay, with_timeout};
 
 mod chunked;
 mod crypto;
@@ -78,13 +79,15 @@ pub async fn serve(
     aes_secret: Option<&str>,
     max_frame_size: usize,
 ) -> Result<()> {
-    let header = match read_header(&mut client).await {
-        Ok(header) => header,
-        Err(_) => {
-            let _ = camouflage::write_not_found(&mut client).await;
-            return Ok(());
-        }
-    };
+    let timeout = connector.connect_timeout();
+    let header =
+        match with_timeout(timeout, "fakehttp request header", read_header(&mut client)).await {
+            Ok(header) => header,
+            Err(_) => {
+                let _ = camouflage::write_not_found(&mut client).await;
+                return Ok(());
+            }
+        };
     let request = match Request::parse(&header) {
         Ok(request) => request,
         Err(_) => {
@@ -132,7 +135,7 @@ pub async fn serve(
     // Read the first body chunk on the raw stream: the response header must
     // later be written outside the chunked framing, so the stream stays raw
     // until the handshake is accepted.
-    let hello = match read_hello_chunk(&mut client).await {
+    let hello = match with_timeout(timeout, "fakehttp hello", read_hello_chunk(&mut client)).await {
         Ok(hello) => hello,
         Err(_) => {
             let _ = camouflage::write_not_found(&mut client).await;
@@ -200,8 +203,12 @@ pub async fn serve(
         response.push_str(&format!("{SALT_HEADER}: {salt_token}\r\n"));
     }
     response.push_str("Connection: keep-alive\r\n\r\n");
-    client.write_all(response.as_bytes()).await?;
-    client.flush().await?;
+    with_timeout(timeout, "fakehttp response", async {
+        client.write_all(response.as_bytes()).await?;
+        client.flush().await?;
+        Ok::<(), std::io::Error>(())
+    })
+    .await?;
     let body = chunked_body_stream(client);
     let body = match crypto_secret {
         Some(secret) => encrypt_stream(
@@ -228,6 +235,8 @@ pub async fn serve(
 /// * `target` - Final destination requested by the local client.
 /// * `aes_secret` - Optional AES secret used to encrypt payload frames.
 /// * `max_frame_size` - Downstream maximum encrypted frame payload size.
+/// * `timeout` - Deadline for the request write, hello write, and response
+///   header read. It is not an idle timeout for the opened tunnel.
 ///
 /// # Returns
 ///
@@ -236,13 +245,15 @@ pub async fn serve(
 /// # Errors
 ///
 /// Returns an error when request writing, the authenticated hello frame,
-/// fakehttp response parsing, or crypto stream initialization fails.
+/// fakehttp response parsing, crypto stream initialization, or the handshake
+/// deadline fails.
 pub async fn connect(
     mut stream: BoxStream,
     endpoint: &Target,
     target: &Target,
     aes_secret: Option<&str>,
     max_frame_size: usize,
+    timeout: Duration,
 ) -> Result<BoxStream> {
     let max_frame_size = normalize_max_frame_size(max_frame_size);
     let encrypted = aes_secret.is_some();
@@ -251,7 +262,6 @@ pub async fn connect(
         None => [0_u8; SALT_SIZE],
     };
     let request = request_header(endpoint, encrypted, &client_nonce, max_frame_size);
-    stream.write_all(request.as_bytes()).await?;
     // The hello chunk carries the target: encrypted and transcript-bound when
     // a secret is configured, plain length-prefixed bytes otherwise.
     let hello = match aes_secret {
@@ -261,9 +271,13 @@ pub async fn connect(
         }
         None => plaintext_hello(target),
     };
-    write_hello_chunk(&mut stream, &hello).await?;
-    stream.flush().await?;
-    let header = read_header(&mut stream).await?;
+    let header = with_timeout(timeout, "fakehttp handshake", async {
+        stream.write_all(request.as_bytes()).await?;
+        write_hello_chunk(&mut stream, &hello).await?;
+        stream.flush().await?;
+        read_header(&mut stream).await
+    })
+    .await?;
     let response = Response::parse(&header)?;
     if response.status_code()? != 200 {
         bail!("fakehttp upstream rejected tunnel: {}", response.status)
@@ -508,16 +522,7 @@ fn request_header(
 /// Returns an error when the header exceeds the configured limit, the stream
 /// ends early, or I/O fails.
 async fn read_header(stream: &mut BoxStream) -> Result<Vec<u8>> {
-    let mut header = Vec::with_capacity(256);
-    while !header.ends_with(b"\r\n\r\n") {
-        if header.len() >= MAX_HEADER_SIZE {
-            bail!("fakehttp header exceeds {MAX_HEADER_SIZE} bytes")
-        }
-        let mut byte = [0_u8; 1];
-        stream.read_exact(&mut byte).await?;
-        header.push(byte[0]);
-    }
-    Ok(header)
+    crate::bufio::read_until(stream, &[], b"\r\n\r\n", MAX_HEADER_SIZE, "fakehttp header").await
 }
 
 /// Read the first HTTP chunk carrying the tunnel hello frame from a raw stream.
@@ -536,21 +541,12 @@ async fn read_header(stream: &mut BoxStream) -> Result<Vec<u8>> {
 /// length is out of range, the trailing delimiter is missing, or the stream
 /// ends before the chunk completes.
 async fn read_hello_chunk(stream: &mut BoxStream) -> Result<Vec<u8>> {
-    // Read the size line byte by byte so following chunk bytes stay buffered
-    // in the kernel for the chunked reader that takes over later.
-    let mut line = Vec::with_capacity(16);
-    loop {
-        let mut byte = [0_u8; 1];
-        stream.read_exact(&mut byte).await?;
-        line.push(byte[0]);
-        if line.len() > 64 {
-            bail!("fakehttp hello chunk size line is too long");
-        }
-        if line.ends_with(b"\r\n") {
-            line.truncate(line.len() - 2);
-            break;
-        }
-    }
+    // 按块读 size line, 多出来的 chunk data 必须交还, 后面的 read_exact 才能接上.
+    let line = crate::bufio::read_until(stream, &[], b"\r\n", 64, "fakehttp hello chunk size line")
+        .await?;
+    let line = line
+        .strip_suffix(b"\r\n")
+        .ok_or_else(|| anyhow::anyhow!("fakehttp hello chunk size line is missing CRLF"))?;
     let text = std::str::from_utf8(&line)?;
     let chunk_size = usize::from_str_radix(text, 16)
         .with_context(|| format!("invalid fakehttp hello chunk size: {text}"))?;

@@ -85,6 +85,7 @@ async fn wrong_secret_handshake_is_rejected_without_dialing_the_target() -> Resu
             &target,
             Some("client-secret"),
             fakehttp::DEFAULT_MAX_FRAME_SIZE,
+            Duration::from_secs(10),
         ),
     )
     .await
@@ -132,6 +133,7 @@ async fn replayed_handshake_is_rejected() -> Result<()> {
         &target,
         Some("shared-secret"),
         fakehttp::DEFAULT_MAX_FRAME_SIZE,
+        Duration::from_secs(10),
     )
     .await
     .context("first handshake")?;
@@ -210,6 +212,7 @@ async fn plaintext_handshake_without_crypto_policy_tunnels_without_salt() -> Res
         &target,
         None,
         fakehttp::DEFAULT_MAX_FRAME_SIZE,
+        Duration::from_secs(10),
     )
     .await
     .context("plaintext handshake")?;

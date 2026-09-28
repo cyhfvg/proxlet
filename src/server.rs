@@ -38,11 +38,14 @@ use crate::{fakehttp, http, socks};
 /// socket fails the accept loop.
 pub async fn run(cli: Cli) -> Result<()> {
     let config = Arc::new(cli.into_config().await?);
-    let connector = Arc::new(Connector::with_fakehttp_max_frame_size(
-        config.upstream.clone(),
-        config.upstream_ca.as_deref(),
-        config.max_frame_size,
-    )?);
+    let connector = Arc::new(
+        Connector::with_fakehttp_max_frame_size(
+            config.upstream.clone(),
+            config.upstream_ca.as_deref(),
+            config.max_frame_size,
+        )?
+        .with_connect_timeout(config.connect_timeout),
+    );
     let tls = load_tls(&config)?;
     let listener = TcpListener::bind(config.listen)
         .await
@@ -120,7 +123,12 @@ async fn serve_client(
         }
         ProxyType::Https => {
             let tls = tls.ok_or_else(|| anyhow::anyhow!("TLS listener is not configured"))?;
-            let stream = tls.accept(stream).await?;
+            let stream = crate::connector::with_timeout(
+                connector.connect_timeout(),
+                "TLS handshake",
+                tls.accept(stream),
+            )
+            .await?;
             http::serve(Box::new(stream), &[], connector, config.auth.as_ref()).await
         }
         ProxyType::Socks5 | ProxyType::Socks5h => {
@@ -163,7 +171,12 @@ async fn serve_mixed(
     tls: Option<TlsAcceptor>,
 ) -> Result<()> {
     let mut first = [0_u8; 1];
-    stream.read_exact(&mut first).await?;
+    crate::connector::with_timeout(
+        connector.connect_timeout(),
+        "mixed protocol detection",
+        stream.read_exact(&mut first),
+    )
+    .await?;
     // Mixed mode uses the first byte only for dispatch, then replays it through
     // PrefixStream for protocols that still need to consume it.
     match first[0] {
@@ -172,9 +185,12 @@ async fn serve_mixed(
             let tls = tls.ok_or_else(|| {
                 anyhow::anyhow!("received a TLS client connection but TLS files are not configured")
             })?;
-            let stream = tls
-                .accept(PrefixStream::new(first.to_vec(), stream))
-                .await?;
+            let stream = crate::connector::with_timeout(
+                connector.connect_timeout(),
+                "TLS handshake",
+                tls.accept(PrefixStream::new(first.to_vec(), stream)),
+            )
+            .await?;
             http::serve(Box::new(stream), &[], connector, auth).await
         }
         byte => http::serve(Box::new(stream), &[byte], connector, auth).await,

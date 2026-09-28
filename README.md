@@ -14,6 +14,7 @@ proxy endpoint and optionally routing traffic through an upstream proxy.
 - Provides username/password authentication and source IP allowlists.
 - Runs in the background with a built-in daemon option.
 - Keeps accepting after transient listener errors instead of exiting.
+- Bounds DNS, TCP dials, and handshakes with `--connect-timeout` (default 10 seconds). Established tunnels are not idle-timed out.
 - Ships as a single executable for easy deployment.
 
 ## Installation
@@ -240,6 +241,7 @@ Stop-Process -Id <PID> -Force
 | `-a, --auth <password>` | Authentication password |
 | `-t, --type <type>` | Proxy type, default: `http` |
 | `--proxy <SCHEMA_URL>` | Upstream proxy URL |
+| `--connect-timeout <SECS>` | DNS, TCP dial, and handshake timeout in seconds. Must be greater than zero. Default: `10`. Established tunnels are not idle-timed out |
 | `--aes-secret <SECRET>` | AES secret for encrypted fakehttp listener mode |
 | `--max-frame-size <KB>` | fakehttp encrypted frame payload size in KiB: `8`, `16`, `32`, or `64`; default: `16` |
 | `--proxy-ca <FILE>` | CA certificate bundle for an HTTPS upstream proxy |

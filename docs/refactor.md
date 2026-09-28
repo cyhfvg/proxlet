@@ -11,6 +11,7 @@
 - [x] P1-15: relay 入口先 flush 两端, chunked 与 crypto 短写不再对外报全部已接受.
 - [x] P1-1: HTTP 正向代理一次转发后关闭, Host 改为目标, 剥离 hop-by-hop, 不把后续请求拷到第一个 origin.
 - [x] P1-2: accept 瞬时错误记日志并退避, 只有监听套接字关闭才退出.
+- [x] P1-5: 拨号和握手按 `--connect-timeout` 超时, 默认 10 秒; 握手期读头改为块读并交还多读字节.
 - [ ] 其余条目待处理.
 
 结论: 有. 最严重的是 fakehttp 握手不在 AEAD 里, 改 URL 就能把已解密流量重定向. 默认 HTTP 模式在连接复用下会传错主机. 缓冲型写端进 relay 前不 flush, HTTPS 监听可能把 200 留在用户态. daemon 会在真正监听前报成功. 半套认证会被静默关掉. 效率上先改逐字节读头和 SSH 每连接握手.
@@ -25,7 +26,7 @@
 | --- | --- |
 | graceful shutdown | `src/main.rs` 没有信号处理器. `Cargo.toml` 开了 tokio `signal`, 源码未使用. `src/server.rs:74` 的 task 是 detach 的, 退出时无法等待. |
 | connection-count | `src/server.rs:74` `tokio::spawn` 无 semaphore. 白名单拒绝发生在 spawn 之前 (`src/server.rs:62-69`), 通过的连接没有上限. |
-| idle-timeout | 头读取和 `relay` 都没有截止时间. 具体循环见 P1-5. |
+| idle-timeout | `relay` 和隧道建立后的正文拷贝仍没有截止时间. 拨号, 握手和握手期读头已有 `--connect-timeout`, 见 P1-5. |
 | allowlist 集成测试 | 仍缺. 单测只覆盖 CLI 解析 (`tests/cli.rs`). |
 | 多平台 release 动态库检查 | 仍缺. `.github/workflows/release.yml` 构建 musl, MSVC, ARM64 三个 target, 只有 `cargo build --release`, 没有测试或运行校验步骤. |
 | SOCKS `UDP ASSOCIATE` / `BIND` | 未实现. 不是回归. |

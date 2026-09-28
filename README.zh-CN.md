@@ -13,6 +13,7 @@
 - 提供用户名/密码认证与来源 IP 白名单。
 - 通过内置 daemon 参数在后台运行。
 - 监听遇到瞬时错误时继续接受连接, 不会因此退出。
+- 拨号和握手使用 `--connect-timeout` 限制时间, 默认 10 秒. 已建立的隧道不受这个截止时间影响.
 - 以单个可执行文件发布，便于部署。
 
 ## 安装
@@ -232,6 +233,7 @@ Stop-Process -Id <PID> -Force
 | `-a, --auth <password>` | 认证密码 |
 | `-t, --type <type>` | 代理类型，默认值：`http` |
 | `--proxy <SCHEMA_URL>` | 上游代理 URL |
+| `--connect-timeout <SECS>` | DNS、TCP 拨号和握手超时, 单位秒, 必须大于 0, 默认值: `10`. 已建立的隧道不会因此空闲断开 |
 | `--aes-secret <SECRET>` | fakehttp 监听模式使用的 AES 加密 secret |
 | `--max-frame-size <KB>` | fakehttp 加密帧 payload 大小，单位 KiB，可选 `8`、`16`、`32`、`64`，默认值：`16` |
 | `--proxy-ca <FILE>` | 用于验证 HTTPS 上游代理的 CA 证书包 |

@@ -4,8 +4,11 @@
 //! management, daemon spawning, and the top-level server runner used by the
 //! binary.
 
+/// Block reads that return unread tail bytes to the same stream.
+pub mod bufio;
 /// Web-looking replies that hide nmap HTTP-proxy fingerprints.
 pub mod camouflage;
+
 /// Command-line parsing and runtime configuration.
 pub mod cli;
 

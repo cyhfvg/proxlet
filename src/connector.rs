@@ -3,11 +3,14 @@
 //! The connector hides direct TCP dialing, HTTP/HTTPS CONNECT, SOCKS5,
 //! fakehttp, and SSH upstream setup behind one async `connect` operation.
 
+use std::future::Future;
 use std::io;
+use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
@@ -92,6 +95,7 @@ pub struct Connector {
     upstream: Option<Upstream>,
     tls: Arc<ClientConfig>,
     fakehttp_max_frame_size: usize,
+    connect_timeout: Duration,
 }
 
 impl Connector {
@@ -148,7 +152,54 @@ impl Connector {
             upstream,
             tls: Arc::new(tls),
             fakehttp_max_frame_size,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
         })
+    }
+
+    /// Replace the DNS, TCP dial, and handshake deadline.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Connector to update.
+    /// * `timeout` - Per-attempt deadline. This is not an idle timeout for an
+    ///   established tunnel.
+    ///
+    /// # Returns
+    ///
+    /// Returns the connector with the timeout replaced.
+    ///
+    /// # Errors
+    ///
+    /// This function does not return errors.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let connector = Connector::new(None, None)?
+    ///     .with_connect_timeout(Duration::from_secs(5));
+    /// ```
+    pub fn with_connect_timeout(mut self, timeout: Duration) -> Self {
+        self.connect_timeout = timeout;
+        self
+    }
+
+    /// Return the configured DNS, dial, and handshake deadline.
+    ///
+    /// # Returns
+    ///
+    /// Returns the per-attempt timeout. Established tunnels are not affected.
+    ///
+    /// # Errors
+    ///
+    /// This function does not return errors.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let timeout = connector.connect_timeout();
+    /// ```
+    pub fn connect_timeout(&self) -> Duration {
+        self.connect_timeout
     }
 
     /// Connect to a target through the configured upstream path.
@@ -167,45 +218,53 @@ impl Connector {
     /// Returns an error when TCP dialing, TLS negotiation, proxy handshakes,
     /// fakehttp negotiation, or SSH forwarding fails.
     pub async fn connect(&self, target: &Target) -> Result<BoxStream> {
+        let timeout = self.connect_timeout;
         match &self.upstream {
-            None => Ok(Box::new(connect_tcp(target).await?)),
+            None => Ok(Box::new(connect_tcp(target, timeout).await?)),
             Some(Upstream::Http(endpoint)) => {
-                let mut stream: BoxStream = Box::new(connect_tcp(&endpoint.target).await?);
-                establish_http_tunnel(&mut stream, target, endpoint.credentials.as_ref()).await?;
+                let mut stream: BoxStream = Box::new(connect_tcp(&endpoint.target, timeout).await?);
+                establish_http_tunnel(&mut stream, target, endpoint.credentials.as_ref(), timeout)
+                    .await?;
                 Ok(stream)
             }
             Some(Upstream::Https(endpoint)) => {
-                let tcp = connect_tcp(&endpoint.target).await?;
+                let tcp = connect_tcp(&endpoint.target, timeout).await?;
                 let mut stream = self.tls_connect(tcp, &endpoint.target.host).await?;
-                establish_http_tunnel(&mut stream, target, endpoint.credentials.as_ref()).await?;
+                establish_http_tunnel(&mut stream, target, endpoint.credentials.as_ref(), timeout)
+                    .await?;
                 Ok(stream)
             }
             Some(Upstream::Socks5 {
                 endpoint,
                 remote_dns,
             }) => {
-                let mut stream: BoxStream = Box::new(connect_tcp(&endpoint.target).await?);
+                let mut stream: BoxStream = Box::new(connect_tcp(&endpoint.target, timeout).await?);
                 socks_connect(
                     &mut stream,
                     target,
                     endpoint.credentials.as_ref(),
                     *remote_dns,
+                    timeout,
                 )
                 .await?;
                 Ok(stream)
             }
-            Some(Upstream::Ssh(endpoint)) => ssh_connect(endpoint, target).await,
+            Some(Upstream::Ssh(endpoint)) => {
+                let tcp = connect_tcp(&endpoint.target, timeout).await?;
+                ssh_connect(tcp, endpoint, target, timeout).await
+            }
             Some(Upstream::FakeHttp {
                 endpoint,
                 aes_secret,
             }) => {
-                let stream: BoxStream = Box::new(connect_tcp(&endpoint.target).await?);
+                let stream: BoxStream = Box::new(connect_tcp(&endpoint.target, timeout).await?);
                 fakehttp::connect(
                     stream,
                     &endpoint.target,
                     target,
                     aes_secret.as_deref(),
                     self.fakehttp_max_frame_size,
+                    timeout,
                 )
                 .await
             }
@@ -231,10 +290,53 @@ impl Connector {
     async fn tls_connect(&self, stream: TcpStream, host: &str) -> Result<BoxStream> {
         let name = ServerName::try_from(host.to_owned())
             .with_context(|| format!("invalid TLS server name {host}"))?;
-        let stream = TlsConnector::from(self.tls.clone())
-            .connect(name, stream)
-            .await?;
+        let stream = with_timeout(
+            self.connect_timeout,
+            "TLS handshake",
+            TlsConnector::from(self.tls.clone()).connect(name, stream),
+        )
+        .await?;
         Ok(Box::new(stream))
+    }
+}
+
+/// Default deadline for one DNS lookup, one TCP address, or one handshake phase.
+pub(crate) const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Run `fut` and fail when it does not finish within `timeout`.
+///
+/// # Parameters
+///
+/// * `timeout` - Deadline for this attempt only.
+/// * `what` - Lowercase label included in the timeout error.
+/// * `fut` - Operation to bound. Dropping it does not cancel work that the
+///   future already spawned.
+///
+/// # Returns
+///
+/// Returns the successful value of `fut`.
+///
+/// # Errors
+///
+/// Returns `fut`'s error, or `{what} timed out` when the deadline fires.
+///
+/// # Examples
+///
+/// ```ignore
+/// let stream = with_timeout(timeout, "TCP connect", TcpStream::connect(addr)).await?;
+/// ```
+pub(crate) async fn with_timeout<T, E>(
+    timeout: Duration,
+    what: &str,
+    fut: impl Future<Output = std::result::Result<T, E>>,
+) -> Result<T>
+where
+    E: Into<anyhow::Error>,
+{
+    match tokio::time::timeout(timeout, fut).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(error.into()),
+        Err(_) => bail!("{what} timed out"),
     }
 }
 
@@ -243,6 +345,7 @@ impl Connector {
 /// # Parameters
 ///
 /// * `target` - Destination host and port.
+/// * `timeout` - Deadline used once for DNS and again for each resolved address.
 ///
 /// # Returns
 ///
@@ -250,11 +353,70 @@ impl Connector {
 ///
 /// # Errors
 ///
-/// Returns an error when DNS resolution or TCP connection fails.
-async fn connect_tcp(target: &Target) -> Result<TcpStream> {
-    TcpStream::connect((target.host.as_str(), target.port))
+/// Returns an error when DNS resolution or every TCP attempt fails.
+///
+/// # Examples
+///
+/// ```ignore
+/// let stream = connect_tcp(&target, Duration::from_secs(10)).await?;
+/// ```
+async fn connect_tcp(target: &Target, timeout: Duration) -> Result<TcpStream> {
+    let addrs = with_timeout(
+        timeout,
+        "DNS lookup",
+        tokio::net::lookup_host((target.host.as_str(), target.port)),
+    )
+    .await
+    .with_context(|| format!("could not resolve {}", target.host))?;
+    let addrs: Vec<SocketAddr> = addrs.collect();
+    if addrs.is_empty() {
+        bail!("could not resolve {}", target.host);
+    }
+    connect_socket_addrs(addrs, timeout)
         .await
         .with_context(|| format!("could not connect to {}", target.authority()))
+}
+
+/// Dial addresses one at a time, each with a fresh timeout.
+///
+/// # Parameters
+///
+/// * `addrs` - Candidate socket addresses, in the order to try them.
+/// * `timeout` - Deadline for each address. A timed-out address does not
+///   consume the next address's deadline.
+///
+/// # Returns
+///
+/// Returns the first established stream.
+///
+/// # Errors
+///
+/// Returns the last dial error, or an error when `addrs` is empty.
+///
+/// # Examples
+///
+/// ```ignore
+/// let stream = connect_socket_addrs([first, second], Duration::from_millis(200)).await?;
+/// ```
+async fn connect_socket_addrs(
+    addrs: impl IntoIterator<Item = SocketAddr>,
+    timeout: Duration,
+) -> Result<TcpStream> {
+    let mut last_error = None;
+    let mut tried = false;
+    for addr in addrs {
+        tried = true;
+        match tokio::time::timeout(timeout, TcpStream::connect(addr)).await {
+            Ok(Ok(stream)) => return Ok(stream),
+            Ok(Err(error)) => last_error = Some(anyhow::Error::from(error)),
+            Err(_) => last_error = Some(anyhow::anyhow!("connect to {addr} timed out")),
+        }
+    }
+    match last_error {
+        Some(error) => Err(error),
+        None if !tried => bail!("no address to dial"),
+        None => bail!("no address to dial"),
+    }
 }
 
 /// Relay bytes bidirectionally between a client stream and a remote stream.
@@ -279,4 +441,38 @@ pub async fn relay(mut client: BoxStream, mut remote: BoxStream) -> io::Result<(
     tokio::io::copy_bidirectional(&mut client, &mut remote)
         .await
         .map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_connector_defaults_to_ten_seconds() {
+        let connector = Connector::new(None, None).expect("connector");
+        assert_eq!(connector.connect_timeout(), Duration::from_secs(10));
+    }
+
+    #[tokio::test]
+    async fn connect_falls_through_a_timed_out_address() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let local = listener.local_addr().expect("local address");
+        let started = std::time::Instant::now();
+        let stream = connect_socket_addrs(
+            [
+                SocketAddr::new(
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1)),
+                    1,
+                ),
+                local,
+            ],
+            Duration::from_millis(200),
+        )
+        .await
+        .expect("second address");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(stream.peer_addr().expect("peer"), local);
+    }
 }

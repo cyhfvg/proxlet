@@ -3,10 +3,12 @@
 //! Non-CONNECT requests are rewritten, forwarded once, and closed. Later bytes
 //! on the client connection are not copied to the origin.
 
+use std::time::Duration;
+
 use anyhow::{Result, bail};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::connector::BoxStream;
+use crate::connector::{BoxStream, with_timeout};
 
 use super::{MAX_HEADER_SIZE, read_header};
 
@@ -31,6 +33,8 @@ const HOP_BY_HOP: &[&str] = &[
 /// * `method` - Client request method. `HEAD` responses have no body.
 /// * `request_headers` - Original request headers, used only to frame the body.
 /// * `origin_header` - Rewritten origin-form request header, including the blank line.
+/// * `timeout` - Deadline for the origin request header write and each origin
+///   response header read. Body copies are not timed out.
 ///
 /// # Returns
 ///
@@ -43,7 +47,7 @@ const HOP_BY_HOP: &[&str] = &[
 /// # Examples
 ///
 /// ```ignore
-/// forward::exchange(&mut client, &mut remote, &method, &headers, &origin_header).await?;
+/// forward::exchange(&mut client, &mut remote, &method, &headers, &origin_header, timeout).await?;
 /// ```
 pub(super) async fn exchange(
     client: &mut BoxStream,
@@ -51,13 +55,20 @@ pub(super) async fn exchange(
     method: &str,
     request_headers: &[(String, String)],
     origin_header: &[u8],
+    timeout: Duration,
 ) -> Result<()> {
-    remote.write_all(origin_header).await?;
+    with_timeout(timeout, "origin request header", async {
+        remote.write_all(origin_header).await?;
+        Ok::<(), std::io::Error>(())
+    })
+    .await?;
     forward_framed_body(client, remote, request_headers).await?;
     remote.flush().await?;
     // 请求体已经写完. 1xx 没有正文, 读到最终响应再写回客户端.
+    // 每一次响应头读取用全新超时, 不把超时套到正文拷贝上.
     let response = loop {
-        let header = read_header(remote, &[]).await?;
+        let header =
+            with_timeout(timeout, "origin response header", read_header(remote, &[])).await?;
         let response = Response::parse(&header)?;
         if response.status / 100 != 1 {
             break response;
@@ -545,19 +556,6 @@ async fn forward_chunked_body(from: &mut BoxStream, to: &mut BoxStream) -> Resul
 /// let line = read_crlf_line(&mut stream).await?;
 /// ```
 async fn read_crlf_line(stream: &mut BoxStream) -> Result<Vec<u8>> {
-    let mut line = Vec::new();
-    loop {
-        if line.len() >= MAX_HEADER_SIZE {
-            bail!("HTTP line exceeds limit");
-        }
-        let mut byte = [0_u8; 1];
-        let read = stream.read(&mut byte).await?;
-        if read == 0 {
-            bail!("HTTP line ended early");
-        }
-        line.push(byte[0]);
-        if line.ends_with(b"\r\n") {
-            return Ok(line);
-        }
-    }
+    // 块读多出来的是 chunk data, 必须交还, 否则后面的 read_exact 会丢字节.
+    crate::bufio::read_until(stream, &[], b"\r\n", MAX_HEADER_SIZE, "HTTP line").await
 }

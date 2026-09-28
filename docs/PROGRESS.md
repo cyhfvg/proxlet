@@ -61,6 +61,10 @@ Last updated: 2026-09-28
 - Transient accept errors no longer stop the process. `EMFILE`, `ENFILE`,
   `ECONNABORTED`, and `ENOBUFS` are logged and retried after a short backoff.
   The listener exits only when the listening socket is closed.
+- DNS lookups, TCP dials, and protocol handshakes now fail after
+  `--connect-timeout` seconds (default 10). Each resolved address gets a fresh
+  deadline, and handshake header reads use the same deadline. Established
+  tunnels and body copies are not idle-timed out.
 
 ## Operation Notes
 

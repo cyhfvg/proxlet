@@ -6,6 +6,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
@@ -177,6 +178,7 @@ async fn fakehttp_encrypted_round_trip() -> Result<Vec<u8>> {
         &target,
         Some(FAKEHTTP_SECRET),
         fakehttp::DEFAULT_MAX_FRAME_SIZE,
+        Duration::from_secs(10),
     )
     .await?;
 

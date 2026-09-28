@@ -77,6 +77,17 @@ fn validates_max_frame_size_values() {
 }
 
 #[test]
+fn connect_timeout_defaults_to_ten_seconds_and_rejects_zero() {
+    let cli = Cli::try_parse_from(["proxlet"]).expect("defaults");
+    assert_eq!(cli.connect_timeout, 10);
+
+    let cli = Cli::try_parse_from(["proxlet", "--connect-timeout", "3"]).expect("custom timeout");
+    assert_eq!(cli.connect_timeout, 3);
+    assert!(Cli::try_parse_from(["proxlet", "--connect-timeout", "0"]).is_err());
+    assert!(Cli::try_parse_from(["proxlet", "--connect-timeout", "-1"]).is_err());
+}
+
+#[test]
 fn proxy_help_includes_uri_examples() {
     let mut help = Vec::new();
     Cli::command().write_help(&mut help).expect("help renders");

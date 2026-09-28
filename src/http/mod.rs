@@ -11,12 +11,12 @@ use std::sync::Arc;
 use anyhow::{Result, bail};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use url::Url;
 
 use crate::camouflage;
 use crate::cli::Auth;
-use crate::connector::{BoxStream, Connector, Target, relay};
+use crate::connector::{BoxStream, Connector, Target, relay, with_timeout};
 
 pub(super) const MAX_HEADER_SIZE: usize = 64 * 1024;
 
@@ -50,7 +50,13 @@ pub async fn serve(
     connector: Arc<Connector>,
     auth: Option<&Auth>,
 ) -> Result<()> {
-    let header = match read_header(&mut client, initial).await {
+    let header = match with_timeout(
+        connector.connect_timeout(),
+        "HTTP request header",
+        read_header(&mut client, initial),
+    )
+    .await
+    {
         Ok(header) => header,
         Err(_) => {
             let _ = camouflage::write_not_found(&mut client).await;
@@ -71,13 +77,16 @@ pub async fn serve(
         return Ok(());
     }
     if !request.is_authorized(auth) {
-        client
-            .write_all(
+        with_timeout(
+            connector.connect_timeout(),
+            "proxy authentication response",
+            client.write_all(
                 b"HTTP/1.1 407 Proxy Authentication Required\r\n\
                   Proxy-Authenticate: Basic realm=\"proxlet\"\r\n\
                   Content-Length: 0\r\nConnection: close\r\n\r\n",
-            )
-            .await?;
+            ),
+        )
+        .await?;
         return Ok(());
     }
 
@@ -91,9 +100,12 @@ pub async fn serve(
     };
 
     if request.method.eq_ignore_ascii_case("CONNECT") {
-        client
-            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-            .await?;
+        with_timeout(
+            connector.connect_timeout(),
+            "CONNECT response",
+            client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n"),
+        )
+        .await?;
         relay(client, remote).await?;
         return Ok(());
     }
@@ -107,6 +119,7 @@ pub async fn serve(
         &request.method,
         &request.headers,
         &origin_header,
+        connector.connect_timeout(),
     )
     .await?;
     client.shutdown().await?;
@@ -136,16 +149,14 @@ pub async fn serve(
 /// let header = read_header(&mut stream, &[]).await?;
 /// ```
 pub(super) async fn read_header(stream: &mut BoxStream, initial: &[u8]) -> Result<Vec<u8>> {
-    let mut header = initial.to_vec();
-    while !header.ends_with(b"\r\n\r\n") {
-        if header.len() >= MAX_HEADER_SIZE {
-            bail!("HTTP proxy request header exceeds {MAX_HEADER_SIZE} bytes")
-        }
-        let mut byte = [0_u8; 1];
-        stream.read_exact(&mut byte).await?;
-        header.push(byte[0]);
-    }
-    Ok(header)
+    crate::bufio::read_until(
+        stream,
+        initial,
+        b"\r\n\r\n",
+        MAX_HEADER_SIZE,
+        "HTTP proxy request header",
+    )
+    .await
 }
 
 #[derive(Debug)]

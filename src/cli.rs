@@ -6,6 +6,7 @@
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::time::Duration;
 
 use anyhow::{Result, bail};
 use clap::{Parser, ValueEnum};
@@ -72,6 +73,15 @@ pub struct Cli {
         value_parser = parse_max_frame_size
     )]
     pub max_frame_size: usize,
+
+    /// DNS, TCP dial, and handshake timeout in seconds. Established tunnels are not idle-timed out.
+    #[arg(
+        long,
+        value_name = "SECS",
+        default_value_t = DEFAULT_CONNECT_TIMEOUT_SECS,
+        value_parser = parse_connect_timeout
+    )]
+    pub connect_timeout: u64,
 
     /// PEM CA certificate bundle used to verify an HTTPS upstream proxy.
     #[arg(long, value_name = "FILE", requires = "proxy")]
@@ -152,6 +162,32 @@ fn parse_max_frame_size(value: &str) -> std::result::Result<usize, String> {
         Ok(size)
     } else {
         Err("max frame size must be one of 8, 16, 32, or 64".to_owned())
+    }
+}
+
+const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
+
+/// Parse a positive connect timeout in seconds.
+///
+/// # Parameters
+///
+/// * `value` - Raw CLI value.
+///
+/// # Returns
+///
+/// Returns the accepted timeout in seconds.
+///
+/// # Errors
+///
+/// Returns an error string when the input is not a positive integer.
+fn parse_connect_timeout(value: &str) -> std::result::Result<u64, String> {
+    let seconds = value
+        .parse::<u64>()
+        .map_err(|_| format!("invalid connect timeout: {value}"))?;
+    if seconds == 0 {
+        Err("connect timeout must be greater than zero".to_owned())
+    } else {
+        Ok(seconds)
     }
 }
 
@@ -246,6 +282,8 @@ pub struct Config {
     pub tls_cert: Option<PathBuf>,
     /// Optional TLS private key for HTTPS listener mode.
     pub tls_key: Option<PathBuf>,
+    /// DNS, TCP dial, and handshake deadline. Established tunnels are not affected.
+    pub connect_timeout: Duration,
 }
 
 impl Cli {
@@ -287,6 +325,7 @@ impl Cli {
             upstream_ca: self.proxy_ca,
             tls_cert: self.tls_cert,
             tls_key: self.tls_key,
+            connect_timeout: Duration::from_secs(self.connect_timeout),
         })
     }
 }

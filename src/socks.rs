@@ -10,7 +10,7 @@ use anyhow::{Result, bail};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::cli::Auth;
-use crate::connector::{BoxStream, Connector, Target, relay};
+use crate::connector::{BoxStream, Connector, Target, relay, with_timeout};
 
 /// Serve one SOCKS5 client connection.
 ///
@@ -35,23 +35,27 @@ pub async fn serve(
     connector: Arc<Connector>,
     auth: Option<&Auth>,
 ) -> Result<()> {
-    let version = match first_byte {
-        Some(byte) => byte,
-        None => read_u8(&mut client).await?,
-    };
-    if version != 0x05 {
-        bail!("unsupported SOCKS version")
-    }
-    authenticate(&mut client, auth).await?;
-    let target = read_request(&mut client).await?;
+    let timeout = connector.connect_timeout();
+    let target = with_timeout(timeout, "SOCKS handshake", async {
+        let version = match first_byte {
+            Some(byte) => byte,
+            None => read_u8(&mut client).await?,
+        };
+        if version != 0x05 {
+            bail!("unsupported SOCKS version");
+        }
+        authenticate(&mut client, auth).await?;
+        read_request(&mut client).await
+    })
+    .await?;
     let remote = match connector.connect(&target).await {
         Ok(remote) => remote,
         Err(error) => {
-            write_reply(&mut client, 0x04).await?;
+            let _ = with_timeout(timeout, "SOCKS reply", write_reply(&mut client, 0x04)).await;
             return Err(error);
         }
     };
-    write_reply(&mut client, 0x00).await?;
+    with_timeout(timeout, "SOCKS reply", write_reply(&mut client, 0x00)).await?;
     relay(client, remote).await?;
     Ok(())
 }
