@@ -68,7 +68,8 @@ pub async fn serve(
     let remote = match connector.connect(&target).await {
         Ok(remote) => remote,
         Err(error) => {
-            let _ = with_timeout(timeout, "SOCKS reply", write_reply(&mut client, 0x04)).await;
+            let status = socks_connect_reply(&error);
+            let _ = with_timeout(timeout, "SOCKS reply", write_reply(&mut client, status)).await;
             crate::access::record(peer, protocol, Some(&logged), "error");
             return Err(error);
         }
@@ -110,13 +111,16 @@ async fn authenticate(client: &mut BoxStream, auth: Option<&Auth>) -> Result<()>
     client.write_all(&[0x05, selected]).await?;
     if let Some(auth) = auth {
         if read_u8(client).await? != 0x01 {
-            bail!("invalid SOCKS5 username/password authentication version")
-        }
-        let username = read_string(client).await?;
-        let password = read_string(client).await?;
-        if username != auth.username || password != auth.password {
             client.write_all(&[0x01, 0x01]).await?;
-            bail!("SOCKS5 authentication failed")
+            bail!("invalid SOCKS5 username/password authentication version");
+        }
+        let username = read_counted_bytes(client).await?;
+        let password = read_counted_bytes(client).await?;
+        if username.as_slice() != auth.username.as_bytes()
+            || password.as_slice() != auth.password.as_bytes()
+        {
+            client.write_all(&[0x01, 0x01]).await?;
+            bail!("SOCKS5 authentication failed");
         }
         client.write_all(&[0x01, 0x00]).await?;
     }
@@ -151,7 +155,16 @@ async fn read_request(client: &mut BoxStream) -> Result<Target> {
             client.read_exact(&mut octets).await?;
             Ipv4Addr::from(octets).to_string()
         }
-        0x03 => read_string(client).await?,
+        0x03 => {
+            let bytes = read_counted_bytes(client).await?;
+            match String::from_utf8(bytes) {
+                Ok(host) => host,
+                Err(_) => {
+                    write_reply(client, 0x01).await?;
+                    bail!("SOCKS5 domain is not UTF-8");
+                }
+            }
+        }
         0x04 => {
             let mut octets = [0_u8; 16];
             client.read_exact(&mut octets).await?;
@@ -192,7 +205,7 @@ async fn write_reply(client: &mut BoxStream, status: u8) -> Result<()> {
     Ok(())
 }
 
-/// Read a SOCKS length-prefixed UTF-8 string.
+/// Read a SOCKS length-prefixed byte string.
 ///
 /// # Parameters
 ///
@@ -200,16 +213,52 @@ async fn write_reply(client: &mut BoxStream, status: u8) -> Result<()> {
 ///
 /// # Returns
 ///
-/// Returns the decoded string.
+/// Returns the raw bytes. Username, password, and domain values are not
+/// required to be UTF-8 at this layer.
 ///
 /// # Errors
 ///
-/// Returns an error when reading fails or bytes are not valid UTF-8.
-async fn read_string(client: &mut BoxStream) -> Result<String> {
+/// Returns an error when reading fails.
+///
+/// # Examples
+///
+/// ```text
+/// let bytes = read_counted_bytes(client).await?;
+/// ```
+async fn read_counted_bytes(client: &mut BoxStream) -> Result<Vec<u8>> {
     let length = read_u8(client).await? as usize;
     let mut bytes = vec![0_u8; length];
     client.read_exact(&mut bytes).await?;
-    Ok(String::from_utf8(bytes)?)
+    Ok(bytes)
+}
+
+/// Map a failed target dial to a SOCKS5 reply code.
+///
+/// # Parameters
+///
+/// * `error` - Error returned by the connector.
+///
+/// # Returns
+///
+/// Returns `0x05` when the error chain contains connection refused, otherwise
+/// `0x04`.
+///
+/// # Errors
+///
+/// This function does not return errors.
+///
+/// # Examples
+///
+/// ```text
+/// let status = socks_connect_reply(&error);
+/// ```
+fn socks_connect_reply(error: &anyhow::Error) -> u8 {
+    let refused = error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io_error| io_error.kind() == std::io::ErrorKind::ConnectionRefused)
+    });
+    if refused { 0x05 } else { 0x04 }
 }
 
 /// Read one byte from a SOCKS stream.

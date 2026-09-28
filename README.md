@@ -100,7 +100,10 @@ proxlet --proxy 'ssh://username@127.0.0.1:22?key=/home/username/.ssh/id_ed25519'
 
 A `socks5h` upstream sends hostnames to the upstream proxy. An IP literal is
 still sent as a SOCKS5 IPv4 or IPv6 address, not as a domain name. A SOCKS
-upstream URL with a username and password offers only method `0x02`.
+upstream URL with a username and password offers only method `0x02`. A SOCKS5
+listener compares usernames and passwords as bytes. A non-UTF-8 password or
+domain gets a failure reply instead of a dropped handshake. Connection refused
+is reply `0x05`.
 
 For SSH upstreams, use `ssh://username:password@host:port` for password
 authentication or add `?key=/path/to/private_key` for public-key

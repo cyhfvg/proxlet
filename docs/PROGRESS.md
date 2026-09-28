@@ -112,6 +112,8 @@ Last updated: 2026-09-28
   before dialing. It is not written as plaintext HTTP to port 443.
 - An HTTP upstream CONNECT succeeds only when the status code field is 200 and
   the response does not declare a body.
+- A SOCKS5 listener compares usernames and passwords as bytes. A non-UTF-8
+  password or domain gets a failure reply. Connection refused is reply `0x05`.
 - SSH upstream mode accepts server host keys directly and does not read or
   write `known_hosts`.
 - fakehttp mode uses an HTTP/1.1-looking handshake followed by a proxlet-specific

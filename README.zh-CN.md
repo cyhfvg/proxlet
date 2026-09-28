@@ -96,6 +96,7 @@ proxlet --proxy 'ssh://username@127.0.0.1:22?key=/home/username/.ssh/id_ed25519'
 
 `socks5h` 上游会把主机名交给上游代理解析。IP 字面量仍按 SOCKS5 的 IPv4 或
 IPv6 地址发送，不会被当成域名。带用户名和密码的 SOCKS 上游只提供方法 `0x02`。
+SOCKS5 监听端按字节比较用户名和密码。非 UTF-8 口令或域名会返回失败应答，而不是直接拆连接。连接被拒绝时回复 `0x05`。
 
 SSH 上游可使用 `ssh://username:password@host:port` 进行密码认证，也可添加
 `?key=/path/to/private_key` 进行公钥认证。如果 URL 同时包含密码和 `key`，
