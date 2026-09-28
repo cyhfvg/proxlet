@@ -106,6 +106,8 @@ Last updated: 2026-09-28
   production relay. A short loopback run did not show a clear gain from 64 KiB
   buffers over tokio's default 8 KiB buffers, so `relay` still uses
   `copy_bidirectional`.
+- A SOCKS upstream URL with credentials offers only username/password method
+  `0x02`. A different selected method fails and includes the method number.
 - SSH upstream mode accepts server host keys directly and does not read or
   write `known_hosts`.
 - fakehttp mode uses an HTTP/1.1-looking handshake followed by a proxlet-specific

@@ -78,9 +78,9 @@ pub(super) async fn establish_http_tunnel(
 /// Returns `Ok(())` once the SOCKS5 proxy has connected to the target.
 ///
 /// # Errors
-///
 /// Returns an error when authentication, DNS resolution, request writing, or
-/// proxy response parsing fails.
+/// proxy response parsing fails. A selected method other than the one offered
+/// is an error and includes the method number.
 pub(super) async fn socks_connect(
     stream: &mut BoxStream,
     target: &Target,
@@ -89,21 +89,23 @@ pub(super) async fn socks_connect(
     timeout: Duration,
 ) -> Result<()> {
     super::with_timeout(timeout, "SOCKS handshake", async {
-        let methods = if credentials.is_some() {
-            &[0x00, 0x02][..]
+        let expected = if credentials.is_some() { 0x02 } else { 0x00 };
+        let methods: &[u8] = if credentials.is_some() {
+            &[0x02]
         } else {
-            &[0x00][..]
+            &[0x00]
         };
         stream.write_all(&[0x05, methods.len() as u8]).await?;
         stream.write_all(methods).await?;
         let mut selected = [0_u8; 2];
         stream.read_exact(&mut selected).await?;
-        if selected[0] != 0x05 || selected[1] == 0xff {
-            bail!("upstream SOCKS5 proxy rejected authentication methods")
+        if selected[0] != 0x05 || selected[1] != expected {
+            bail!(
+                "upstream SOCKS5 proxy selected method {:#04x}, expected {expected:#04x}",
+                selected[1]
+            );
         }
-        if selected[1] == 0x02 {
-            let auth = credentials
-                .ok_or_else(|| anyhow::anyhow!("upstream SOCKS5 proxy requested credentials"))?;
+        if let Some(auth) = credentials {
             let username = sized_bytes(&auth.username, "SOCKS username")?;
             let password = sized_bytes(&auth.password, "SOCKS password")?;
             stream.write_all(&[0x01, username.len() as u8]).await?;
@@ -112,7 +114,7 @@ pub(super) async fn socks_connect(
             stream.write_all(password).await?;
             stream.read_exact(&mut selected).await?;
             if selected != [0x01, 0x00] {
-                bail!("upstream SOCKS5 authentication failed")
+                bail!("upstream SOCKS5 authentication failed");
             }
         }
         let mut request = vec![0x05, 0x01, 0x00];
@@ -367,5 +369,42 @@ mod tests {
             let wire = captured.await.expect("capture");
             assert_eq!(wire, expected, "{host}");
         }
+    }
+
+    #[tokio::test]
+    async fn socks_with_credentials_rejects_no_auth_selection() {
+        let (client, mut upstream) = tokio::io::duplex(256);
+        let mut client: BoxStream = Box::new(client);
+        let auth = Credentials {
+            username: "alice".to_string(),
+            password: "secret".to_string(),
+        };
+        let task = tokio::spawn(async move {
+            socks_connect(
+                &mut client,
+                &Target::new("example.com", 80),
+                Some(&auth),
+                true,
+                Duration::from_secs(1),
+            )
+            .await
+        });
+        let mut greeting = [0_u8; 2];
+        upstream.read_exact(&mut greeting).await.expect("greeting");
+        assert_eq!(greeting, [0x05, 0x01]);
+        let mut methods = [0_u8; 1];
+        upstream.read_exact(&mut methods).await.expect("methods");
+        assert_eq!(methods, [0x02]);
+        upstream
+            .write_all(&[0x05, 0x00])
+            .await
+            .expect("select no-auth");
+        let error = task.await.expect("join").expect_err("no-auth selection");
+        let text = error.to_string();
+        assert!(text.contains("0x00"), "{text}");
+        assert!(text.contains("0x02"), "{text}");
+        let mut buf = [0_u8; 8];
+        let n = upstream.read(&mut buf).await.expect("read");
+        assert_eq!(n, 0, "rejected method must not send CONNECT");
     }
 }
