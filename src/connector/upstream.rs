@@ -128,12 +128,11 @@ pub(super) fn parse_upstream(url: Url) -> Result<Upstream> {
     let target = Target::new(
         url.host_str()
             .ok_or_else(|| anyhow::anyhow!("upstream proxy URL has no host"))?,
-        url.port_or_known_default()
-            .ok_or_else(|| anyhow::anyhow!("upstream proxy URL has no port"))?,
+        upstream_port(&url)?,
     );
     let endpoint = Endpoint {
         target: target.clone(),
-        credentials: credentials(&url)?,
+        credentials: credentials(&url, url.scheme() == "fakehttp")?,
     };
     match url.scheme() {
         "http" => Ok(Upstream::Http(endpoint)),
@@ -155,26 +154,80 @@ pub(super) fn parse_upstream(url: Url) -> Result<Upstream> {
     }
 }
 
+/// Resolve an upstream port, including scheme defaults.
+///
+/// # Parameters
+///
+/// * `url` - Upstream proxy URL.
+///
+/// # Returns
+///
+/// Returns an explicit port, or 80, 443, 22, and 1080 for `http`, `https`,
+/// `ssh`, and `socks5`/`socks5h`.
+///
+/// # Errors
+///
+/// Returns an error when the scheme has no default and the URL omits the port.
+///
+/// # Examples
+///
+/// ```text
+/// ssh://user@example.com -> 22
+/// socks5://127.0.0.1 -> 1080
+/// fakehttp://secret@example.com -> error
+/// ```
+fn upstream_port(url: &Url) -> Result<u16> {
+    if let Some(port) = url.port() {
+        return Ok(port);
+    }
+    match url.scheme() {
+        "http" => Ok(80),
+        "https" => Ok(443),
+        "ssh" => Ok(22),
+        "socks5" | "socks5h" => Ok(1080),
+        scheme => bail!("upstream proxy URL has no port for scheme {scheme}"),
+    }
+}
+
 /// Decode username/password credentials from a URL.
 ///
 /// # Parameters
 ///
 /// * `url` - Upstream URL containing optional userinfo.
+/// * `allow_password_without_username` - When true, a password with an empty
+///   username is treated as absent credentials. fakehttp uses that form for
+///   its secret.
 ///
 /// # Returns
 ///
-/// Returns decoded credentials or `None` when no username was supplied.
+/// Returns decoded credentials, or `None` when no username was supplied.
+/// `username()` and `password()` are still percent-encoded, so this decodes
+/// them once.
 ///
 /// # Errors
 ///
-/// Returns an error when percent-decoding or UTF-8 decoding fails.
-fn credentials(url: &Url) -> Result<Option<Credentials>> {
-    if url.username().is_empty() {
+/// Returns an error when a non-fakehttp URL has a password without a username,
+/// or when percent-decoding or UTF-8 decoding fails.
+///
+/// # Examples
+///
+/// ```text
+/// http://user:a%2Bb@127.0.0.1:8080 -> password a+b
+/// http://:secret@127.0.0.1:8080 -> error
+/// ```
+fn credentials(url: &Url, allow_password_without_username: bool) -> Result<Option<Credentials>> {
+    let username = url.username();
+    let password = url.password();
+    if username.is_empty() {
+        if password.is_some() && !allow_password_without_username {
+            bail!("upstream proxy URL has a password but no username");
+        }
         return Ok(None);
     }
-    let username = decode_url_component(url.username())?;
-    let password = decode_url_component(url.password().unwrap_or_default())?;
-    Ok(Some(Credentials { username, password }))
+    Ok(Some(Credentials {
+        username: decode_url_component(username)?,
+        password: decode_url_component(password.unwrap_or_default())?,
+    }))
 }
 
 /// Parse SSH-specific upstream authentication settings.
@@ -193,7 +246,7 @@ fn credentials(url: &Url) -> Result<Option<Credentials>> {
 /// Returns an error when required username/password/key data is missing or
 /// malformed.
 fn parse_ssh_upstream(target: Target, url: &Url) -> Result<SshEndpoint> {
-    let credentials = credentials(url)?;
+    let credentials = credentials(url, false)?;
     let identity = ssh_identity_path(url)?;
     let auth = match (credentials, identity) {
         (Some(credentials), Some(path)) => SshAuthentication {
@@ -222,18 +275,38 @@ fn parse_ssh_upstream(target: Target, url: &Url) -> Result<SshEndpoint> {
 ///
 /// # Returns
 ///
-/// Returns an optional private key path.
+/// Returns an optional private key path. The query is percent-decoded once.
+/// A literal `+` is preserved; a space must be written as `%20`.
 ///
 /// # Errors
 ///
-/// Returns an error when a recognized key parameter is present but empty.
+/// Returns an error when a recognized key parameter is present but empty, or
+/// when percent-decoding fails.
+///
+/// # Examples
+///
+/// ```text
+/// ssh://user@host?key=/tmp/my+key -> /tmp/my+key
+/// ssh://user@host?key=/tmp/my%20key -> /tmp/my key
+/// ```
 fn ssh_identity_path(url: &Url) -> Result<Option<PathBuf>> {
-    for (name, value) in url.query_pairs() {
-        if matches!(name.as_ref(), "key" | "identity" | "identity_file") {
+    let Some(query) = url.query() else {
+        return Ok(None);
+    };
+    for pair in query.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if matches!(
+            decode_url_component(name)?.as_str(),
+            "key" | "identity" | "identity_file"
+        ) {
+            let value = decode_url_component(value)?;
             if value.is_empty() {
-                bail!("ssh private key path is empty")
+                bail!("ssh private key path is empty");
             }
-            return Ok(Some(PathBuf::from(value.into_owned())));
+            return Ok(Some(PathBuf::from(value)));
         }
     }
     Ok(None)
@@ -334,6 +407,87 @@ mod tests {
                 ));
             }
             _ => panic!("expected SSH upstream"),
+        }
+    }
+
+    #[test]
+    fn ssh_key_query_keeps_plus_and_defaults_port() {
+        let url = Url::parse("ssh://user@localhost?key=/tmp/my+key").expect("URL");
+        let upstream = parse_upstream(url).expect("upstream");
+        match upstream {
+            Upstream::Ssh(endpoint) => {
+                assert_eq!(endpoint.target.port, 22);
+                match endpoint.auth.method {
+                    SshAuthenticationMethod::PrivateKey { path, passphrase } => {
+                        assert_eq!(path, PathBuf::from("/tmp/my+key"));
+                        assert!(passphrase.is_none());
+                    }
+                    _ => panic!("expected private key"),
+                }
+            }
+            _ => panic!("expected SSH upstream"),
+        }
+    }
+
+    #[test]
+    fn socks_urls_default_to_port_1080() {
+        let socks5 =
+            parse_upstream(Url::parse("socks5://127.0.0.1").expect("URL")).expect("socks5");
+        let socks5h =
+            parse_upstream(Url::parse("socks5h://127.0.0.1").expect("URL")).expect("socks5h");
+        match (socks5, socks5h) {
+            (
+                Upstream::Socks5 {
+                    endpoint,
+                    remote_dns,
+                },
+                Upstream::Socks5 {
+                    endpoint: endpoint_h,
+                    remote_dns: remote_h,
+                },
+            ) => {
+                assert_eq!(endpoint.target.port, 1080);
+                assert!(!remote_dns);
+                assert_eq!(endpoint_h.target.port, 1080);
+                assert!(remote_h);
+            }
+            _ => panic!("expected SOCKS upstreams"),
+        }
+    }
+
+    #[test]
+    fn password_without_username_is_rejected_except_fakehttp_secret() {
+        let error = parse_upstream(Url::parse("http://:secret@127.0.0.1:8080").expect("URL"))
+            .expect_err("password without username");
+        assert!(error.to_string().contains("password but no username"));
+
+        let upstream =
+            parse_upstream(Url::parse("fakehttp://:secret@127.0.0.1:8080").expect("URL"))
+                .expect("fakehttp secret");
+        match upstream {
+            Upstream::FakeHttp {
+                aes_secret,
+                endpoint,
+            } => {
+                assert_eq!(aes_secret.as_deref(), Some("secret"));
+                assert!(endpoint.credentials.is_none());
+            }
+            _ => panic!("expected fakehttp upstream"),
+        }
+    }
+
+    #[test]
+    fn userinfo_is_percent_decoded_once() {
+        let encoded = parse_upstream(Url::parse("http://user:a%252Bb@127.0.0.1:9").expect("URL"))
+            .expect("encoded");
+        let decoded = parse_upstream(Url::parse("http://user:a%2Bb@127.0.0.1:9").expect("URL"))
+            .expect("decoded");
+        match (encoded, decoded) {
+            (Upstream::Http(encoded), Upstream::Http(decoded)) => {
+                assert_eq!(encoded.credentials.expect("credentials").password, "a%2Bb");
+                assert_eq!(decoded.credentials.expect("credentials").password, "a+b");
+            }
+            _ => panic!("expected HTTP upstreams"),
         }
     }
 }

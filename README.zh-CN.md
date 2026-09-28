@@ -103,7 +103,11 @@ SOCKS5 监听端按字节比较用户名和密码。非 UTF-8 口令或域名会
 
 SSH 上游可使用 `ssh://username:password@host:port` 进行密码认证，也可添加
 `?key=/path/to/private_key` 进行公钥认证。如果 URL 同时包含密码和 `key`，
-该密码会作为私钥口令使用。
+该密码会作为私钥口令使用。`?key=` 只做一次 percent-decode，字面 `+` 会保留，空格要写成 `%20`。
+
+省略端口时，`ssh` 默认 22，`socks5` 和 `socks5h` 默认 1080，`http` 默认 80，
+`https` 默认 443。fakehttp 没有默认端口。只有密码没有用户名会被拒绝，例外是
+`fakehttp://:secret@host:port` 这种把口令写在密码位置的 secret。
 
 SSH 上游会复用一条已认证 session，每个目标只打开一条 `direct-tcpip` 通道。
 会话断开后会重新连接，私钥只加载一次。HTTPS 上游仍然是每个目标一条

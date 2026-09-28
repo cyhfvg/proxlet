@@ -115,7 +115,13 @@ is reply `0x05`.
 For SSH upstreams, use `ssh://username:password@host:port` for password
 authentication or add `?key=/path/to/private_key` for public-key
 authentication. When both a password and `key` are present, the password is
-used as the private key passphrase.
+used as the private key passphrase. `?key=` is percent-decoded once and a
+literal `+` is kept; write a space as `%20`.
+
+Omitted ports default to 22 for `ssh`, 1080 for `socks5` and `socks5h`, 80 for
+`http`, and 443 for `https`. fakehttp has no default port. A password without
+a username is rejected, except a fakehttp secret written as
+`fakehttp://:secret@host:port`.
 
 An SSH upstream reuses one authenticated session and opens one `direct-tcpip`
 channel per target. A dropped session is dialed again, and the private key is

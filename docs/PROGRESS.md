@@ -123,6 +123,9 @@ Last updated: 2026-09-28
   SOCKS4.
 - `create_cert_key.sh` prints OpenSSL stderr on failure. Distribute only
   `proxlet-ca.pem`, not the CA private key or the output directory.
+- Upstream `ssh` defaults to port 22 and `socks5`/`socks5h` default to 1080.
+  `?key=` keeps a literal `+`. A password without a username is rejected,
+  except a fakehttp secret in the password field.
 - SSH upstream mode accepts server host keys directly and does not read or
   write `known_hosts`.
 - fakehttp mode uses an HTTP/1.1-looking handshake followed by a proxlet-specific
