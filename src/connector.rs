@@ -415,7 +415,7 @@ async fn connect_tcp(target: &Target, timeout: Duration) -> Result<TcpStream> {
 ///
 /// # Returns
 ///
-/// Returns the first established stream.
+/// Returns the first established stream with `TCP_NODELAY` enabled.
 ///
 /// # Errors
 ///
@@ -426,6 +426,7 @@ async fn connect_tcp(target: &Target, timeout: Duration) -> Result<TcpStream> {
 /// ```ignore
 /// let stream = connect_socket_addrs([first, second], Duration::from_millis(200)).await?;
 /// ```
+
 async fn connect_socket_addrs(
     addrs: impl IntoIterator<Item = SocketAddr>,
     timeout: Duration,
@@ -435,7 +436,10 @@ async fn connect_socket_addrs(
     for addr in addrs {
         tried = true;
         match tokio::time::timeout(timeout, TcpStream::connect(addr)).await {
-            Ok(Ok(stream)) => return Ok(stream),
+            Ok(Ok(stream)) => {
+                enable_tcp_nodelay(&stream)?;
+                return Ok(stream);
+            }
             Ok(Err(error)) => last_error = Some(anyhow::Error::from(error)),
             Err(_) => last_error = Some(anyhow::anyhow!("connect to {addr} timed out")),
         }
@@ -445,6 +449,31 @@ async fn connect_socket_addrs(
         None if !tried => bail!("no address to dial"),
         None => bail!("no address to dial"),
     }
+}
+
+/// Disable Nagle on an established TCP socket.
+///
+/// # Parameters
+///
+/// * `stream` - Connected TCP socket.
+///
+/// # Returns
+///
+/// Returns `Ok(())` after `TCP_NODELAY` is enabled.
+///
+/// # Errors
+///
+/// Returns an error when the socket rejects the option.
+///
+/// # Examples
+///
+/// ```text
+/// enable_tcp_nodelay(&stream)?;
+/// ```
+pub(crate) fn enable_tcp_nodelay(stream: &TcpStream) -> Result<()> {
+    stream
+        .set_nodelay(true)
+        .context("could not enable TCP_NODELAY")
 }
 
 /// Relay bytes bidirectionally between a client stream and a remote stream.
@@ -502,5 +531,6 @@ mod tests {
         .expect("second address");
         assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(stream.peer_addr().expect("peer"), local);
+        assert!(stream.nodelay().expect("nodelay"));
     }
 }

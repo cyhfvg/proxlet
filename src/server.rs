@@ -146,6 +146,7 @@ async fn serve_client(
     connector: Arc<Connector>,
     tls: Option<TlsAcceptor>,
 ) -> Result<()> {
+    crate::connector::enable_tcp_nodelay(&stream)?;
     match config.proxy_type {
         ProxyType::Http => {
             http::serve(

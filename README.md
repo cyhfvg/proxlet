@@ -15,6 +15,7 @@ proxy endpoint and optionally routing traffic through an upstream proxy.
 - Runs in the background with a built-in daemon option.
 - Keeps accepting after transient listener errors instead of exiting.
 - Bounds DNS, TCP dials, and handshakes with `--connect-timeout` (default 10 seconds). Established tunnels are not idle-timed out.
+- Enables `TCP_NODELAY` on accepted client sockets and outbound TCP connections.
 - Ships as a single executable for easy deployment.
 
 ## Installation
