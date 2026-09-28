@@ -44,6 +44,16 @@ die() {
     exit 1
 }
 
+run_openssl() {
+    local stderr_file="${TEMPORARY_DIRECTORY}/openssl.err"
+    if ! "$@" >/dev/null 2>"${stderr_file}"; then
+        if [[ -s "${stderr_file}" ]]; then
+            cat "${stderr_file}" >&2
+        fi
+        die "openssl command failed"
+    fi
+}
+
 require_command() {
     command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
 }
@@ -175,30 +185,30 @@ main() {
 
     umask 077
     log "generating local CA"
-    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "${ca_key}" >/dev/null 2>&1
-    openssl req -x509 -new -sha256 \
+    run_openssl openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "${ca_key}"
+    run_openssl openssl req -x509 -new -sha256 \
         -key "${ca_key}" \
         -out "${ca_cert}" \
         -days "${DAYS}" \
         -subj "/CN=proxlet Local CA" \
         -addext "basicConstraints = critical, CA:TRUE" \
-        -addext "keyUsage = critical, keyCertSign, cRLSign" >/dev/null 2>&1
+        -addext "keyUsage = critical, keyCertSign, cRLSign"
 
     log "generating HTTPS proxy certificate for CN=${COMMON_NAME}"
-    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "${proxy_key}" >/dev/null 2>&1
-    openssl req -new -sha256 \
+    run_openssl openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "${proxy_key}"
+    run_openssl openssl req -new -sha256 \
         -key "${proxy_key}" \
         -out "${csr}" \
-        -subj "/CN=${COMMON_NAME}" >/dev/null 2>&1
+        -subj "/CN=${COMMON_NAME}"
     write_server_extensions "${extension_file}"
-    openssl x509 -req -sha256 \
+    run_openssl openssl x509 -req -sha256 \
         -in "${csr}" \
         -CA "${ca_cert}" \
         -CAkey "${ca_key}" \
         -CAcreateserial \
         -out "${proxy_cert}" \
         -days "${DAYS}" \
-        -extfile "${extension_file}" >/dev/null 2>&1
+        -extfile "${extension_file}"
     rm -f -- "${OUTPUT_DIR}/proxlet-ca.srl"
 
     chmod 600 "${ca_key}" "${proxy_key}"
@@ -213,6 +223,9 @@ main() {
     printf '\nStart an HTTPS proxy with:\n'
     printf "  proxlet --type https --tls-cert '%s' --tls-key '%s'\n" \
         "${proxy_cert}" "${proxy_key}"
+    printf '\nDistribute only the CA certificate to clients:\n'
+    printf '  %s\n' "${ca_cert}"
+    printf 'Do not distribute %s or the whole output directory.\n' "${ca_key}"
 }
 
 main "$@"

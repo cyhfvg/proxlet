@@ -69,7 +69,8 @@ main() {
     [[ -f "${MANIFEST_PATH}" ]] || die "missing manifest: ${MANIFEST_PATH}"
 
     log "checking shell script syntax"
-    bash -n "${SCRIPT_DIR}/local_build.sh" "${SCRIPT_DIR}/pre_commit_check.sh"
+    bash -n "${SCRIPT_DIR}/local_build.sh" "${SCRIPT_DIR}/pre_commit_check.sh" \
+        "${PROJECT_ROOT}/create_cert_key.sh"
 
     if [[ "${format_mode}" == "write" ]]; then
         log "formatting Rust sources"

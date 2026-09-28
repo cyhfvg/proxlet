@@ -88,8 +88,9 @@ Generate certificate files for local use, then start an HTTPS proxy:
 proxlet --type https --tls-cert certs/proxlet-cert.pem --tls-key certs/proxlet-key.pem
 ```
 
-Trust `certs/proxlet-ca.pem` on clients that connect to this HTTPS proxy. Add
-the proxy's hostname or IP address when generating files for another host:
+Trust `certs/proxlet-ca.pem` on clients that connect to this HTTPS proxy. Do
+not distribute `certs/proxlet-ca-key.pem` or the whole `certs/` directory.
+Add the proxy's hostname or IP address when generating files for another host:
 
 ```bash
 ./create_cert_key.sh --san DNS:proxy.example.com --san IP:192.0.2.10

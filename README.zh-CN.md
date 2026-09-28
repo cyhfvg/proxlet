@@ -80,7 +80,8 @@ HTTP 正向代理请求转发一次后关闭连接. `Host` 改成目标 authorit
 proxlet --type https --tls-cert certs/proxlet-cert.pem --tls-key certs/proxlet-key.pem
 ```
 
-连接该 HTTPS 代理的客户端需要信任 `certs/proxlet-ca.pem`。为其他主机生成
+连接该 HTTPS 代理的客户端需要信任 `certs/proxlet-ca.pem`。不要分发
+`certs/proxlet-ca-key.pem`，也不要分发整个 `certs/` 目录。为其他主机生成
 文件时，请添加代理使用的主机名或 IP 地址：
 
 ```bash
