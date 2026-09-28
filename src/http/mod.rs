@@ -369,10 +369,9 @@ impl Request {
     /// * `self` - Parsed absolute-form HTTP request.
     ///
     /// # Returns
-    ///
-    /// Returns rewritten header bytes suitable for the origin server. `Host`
-    /// matches the target authority, hop-by-hop headers are removed, and
-    /// `Connection: close` is set.
+    /// Returns rewritten header bytes suitable for the origin server. Path and
+    /// query are copied unchanged. `Host` matches the target authority,
+    /// hop-by-hop headers are removed, and `Connection: close` is set.
     ///
     /// # Errors
     ///
@@ -384,16 +383,7 @@ impl Request {
     /// let header = request.origin_form_header()?;
     /// ```
     fn origin_form_header(&self) -> Result<Vec<u8>> {
-        let uri = Url::parse(&self.uri)
-            .map_err(|_| anyhow::anyhow!("forward proxy requests must use an absolute URI"))?;
-        let mut path = uri.path().to_owned();
-        if path.is_empty() {
-            path.push('/');
-        }
-        if let Some(query) = uri.query() {
-            path.push('?');
-            path.push_str(query);
-        }
+        let path = forward::raw_origin_target(&self.uri)?;
         let authority = self.target()?.authority();
         let mut rewritten = format!("{} {} {}\r\n", self.method, path, self.version);
         forward::append_forwarded_headers(&mut rewritten, &self.headers, Some(&authority));

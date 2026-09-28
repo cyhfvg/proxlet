@@ -37,6 +37,7 @@
 - [x] P2-4: HTTP `Basic` 方案名按 ASCII 大小写不敏感解析. 监听端用户名和口令使用常量时间比较.
 - [x] P2-7: 已识别的代理请求失败返回标准 `400`/`502`. 伪装 404 只覆盖非代理探测. 认证失败仍返回 `407`, README 记录 nmap 指纹.
 - [x] P2-9: 非回环且无认证也无 allow-ip 时启动警告. mixed 无证书只接受 HTTP/SOCKS5. scheme 错误列出允许值. TLS 握手失败提示 `--proxy-ca`. SSH 私钥在启动时打开. `--pid-file` 和 `--log-file` 已存在.
+- [x] P2-19: absolute-form 的 path 和 query 原样转发. 只拆 scheme 和 authority 用来拨号.
 
 结论: 有. 最严重的是 fakehttp 握手不在 AEAD 里, 改 URL 就能把已解密流量重定向. 默认 HTTP 模式在连接复用下会传错主机. 缓冲型写端进 relay 前不 flush, HTTPS 监听可能把 200 留在用户态. 效率上先改逐字节读头和 SSH 每连接握手.
 

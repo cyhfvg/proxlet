@@ -1,16 +1,14 @@
 //! One-shot HTTP forward exchange.
-//!
-//! Non-CONNECT requests are rewritten, forwarded once, and closed. Later bytes
-//! on the client connection are not copied to the origin.
+//! Non-CONNECT requests are rewritten once and closed. Later bytes stay on the client.
 
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::connector::{BoxStream, with_timeout};
+use crate::connector::{with_timeout, BoxStream};
 
-use super::{MAX_HEADER_SIZE, read_header};
+use super::{read_header, MAX_HEADER_SIZE};
 
 const HOP_BY_HOP: &[&str] = &[
     "connection",
@@ -558,4 +556,45 @@ async fn forward_chunked_body(from: &mut BoxStream, to: &mut BoxStream) -> Resul
 async fn read_crlf_line(stream: &mut BoxStream) -> Result<Vec<u8>> {
     // 块读多出来的是 chunk data, 必须交还, 否则后面的 read_exact 会丢字节.
     crate::bufio::read_until(stream, &[], b"\r\n", MAX_HEADER_SIZE, "HTTP line").await
+}
+
+/// Keep the client path and query when rewriting absolute-form to origin-form.
+///
+/// # Parameters
+/// * `uri` - Absolute-form request-target.
+///
+/// # Returns
+/// Returns the path and query without WHATWG normalization.
+///
+/// # Errors
+///
+/// Returns an error when `uri` is not absolute-form or has an unclosed bracket.
+///
+/// # Examples
+///
+/// ```text
+/// let path = raw_origin_target("http://example.com/foo/%2e%2e/bar")?;
+/// ```
+pub(super) fn raw_origin_target(uri: &str) -> Result<std::borrow::Cow<'_, str>> {
+    let rest = uri
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .ok_or_else(|| anyhow::anyhow!("forward proxy requests must use an absolute URI"))?;
+    let path_at = if rest.starts_with('[') {
+        let close = rest
+            .find(']')
+            .ok_or_else(|| anyhow::anyhow!("invalid bracketed IPv6 authority"))?;
+        let after = &rest[close + 1..];
+        close + 1 + after.find(['/', '?', '#']).unwrap_or(after.len())
+    } else {
+        rest.find(['/', '?', '#']).unwrap_or(rest.len())
+    };
+    let suffix = rest[path_at..].split('#').next().unwrap_or("");
+    if suffix.is_empty() {
+        return Ok(std::borrow::Cow::Borrowed("/"));
+    }
+    if let Some(query) = suffix.strip_prefix('?') {
+        return Ok(std::borrow::Cow::Owned(format!("/?{query}")));
+    }
+    Ok(std::borrow::Cow::Borrowed(suffix))
 }
