@@ -25,7 +25,7 @@ mod ssh;
 mod upstream;
 
 use protocol::{establish_http_tunnel, socks_connect};
-use ssh::ssh_connect;
+use ssh::{SshSessions, open_ssh_channel};
 use upstream::{Upstream, add_ca_certificates, parse_upstream};
 
 /// Async stream requirements shared by all proxlet transport implementations.
@@ -121,6 +121,7 @@ impl Target {
 pub struct Connector {
     upstream: Option<Upstream>,
     tls: Arc<ClientConfig>,
+    ssh_sessions: Arc<SshSessions>,
     fakehttp_max_frame_size: usize,
     connect_timeout: Duration,
 }
@@ -178,6 +179,7 @@ impl Connector {
         Ok(Self {
             upstream,
             tls: Arc::new(tls),
+            ssh_sessions: Arc::new(SshSessions::new()),
             fakehttp_max_frame_size,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
         })
@@ -277,8 +279,7 @@ impl Connector {
                 Ok(stream)
             }
             Some(Upstream::Ssh(endpoint)) => {
-                let tcp = connect_tcp(&endpoint.target, timeout).await?;
-                ssh_connect(tcp, endpoint, target, timeout).await
+                open_ssh_channel(&self.ssh_sessions, endpoint, target, timeout).await
             }
             Some(Upstream::FakeHttp {
                 endpoint,

@@ -93,6 +93,11 @@ Last updated: 2026-09-28
 - A target host containing CR, LF, NUL, or another control character is
   rejected before it can be spliced into an HTTP `CONNECT` request. The error
   does not include the host.
+- An SSH upstream reuses one authenticated session and opens one
+  `direct-tcpip` channel per target. A dropped session is dialed again. The
+  private key is loaded once with `spawn_blocking` and cached. An HTTPS
+  upstream still opens one `CONNECT` tunnel per target; TLS sessions are
+  reused by the shared rustls `ClientConfig`.
 - SSH upstream mode accepts server host keys directly and does not read or
   write `known_hosts`.
 - fakehttp mode uses an HTTP/1.1-looking handshake followed by a proxlet-specific

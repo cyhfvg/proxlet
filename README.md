@@ -100,6 +100,11 @@ authentication or add `?key=/path/to/private_key` for public-key
 authentication. When both a password and `key` are present, the password is
 used as the private key passphrase.
 
+An SSH upstream reuses one authenticated session and opens one `direct-tcpip`
+channel per target. A dropped session is dialed again, and the private key is
+loaded once. An HTTPS upstream still opens one `CONNECT` tunnel per target;
+TLS sessions are reused by the shared rustls client config.
+
 For fakehttp chaining, run one upstream `proxlet` in fakehttp mode and point a
 downstream `proxlet` at it. The downstream listener still exposes a normal
 local proxy protocol, such as HTTP, for browsers and applications:
