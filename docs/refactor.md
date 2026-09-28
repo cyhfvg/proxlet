@@ -29,6 +29,7 @@
 - [x] P2-15: `scripts/local_build.sh --help` 写 proxlet. Windows 注释 target 与 release workflow 的 `x86_64-pc-windows-msvc` 对齐.
 - [x] P2-5: `--help` 与 README 写明 `socks5` 和 `socks5h` 监听端相同. 远程 DNS 只看上游 URL.
 - [x] P2-3: host 含 `:` 且没有方括号时拒绝, 不再把整串当 host 并套默认端口.
+- [x] P2-14: README 写明 `mixed` 不接受 SOCKS4. 没有为它增加协议.
 
 结论: 有. 最严重的是 fakehttp 握手不在 AEAD 里, 改 URL 就能把已解密流量重定向. 默认 HTTP 模式在连接复用下会传错主机. 缓冲型写端进 relay 前不 flush, HTTPS 监听可能把 200 留在用户态. 效率上先改逐字节读头和 SSH 每连接握手.
 

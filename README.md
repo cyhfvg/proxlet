@@ -52,6 +52,9 @@ Accept HTTP and SOCKS5 clients on the same port:
 proxlet --type mixed --lhost 0.0.0.0 --lport 1080
 ```
 
+`mixed` accepts HTTP, SOCKS5 (`0x05`), and TLS (`0x16`) on the first byte. It
+does not accept SOCKS4.
+
 ## Usage
 
 ### Choose a proxy type

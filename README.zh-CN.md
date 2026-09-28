@@ -51,6 +51,8 @@ proxlet
 proxlet --type mixed --lhost 0.0.0.0 --lport 1080
 ```
 
+`mixed` 按首字节接受 HTTP、SOCKS5（`0x05`）和 TLS（`0x16`）。不接受 SOCKS4。
+
 ## 使用方法
 
 ### 选择代理类型

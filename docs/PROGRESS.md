@@ -119,6 +119,8 @@ Last updated: 2026-09-28
 - `--type socks5` and `--type socks5h` are the same listener. Remote DNS
   follows the upstream URL.
 - An unbracketed IPv6 authority is rejected instead of using the default port.
+- `mixed` accepts HTTP, SOCKS5 (`0x05`), and TLS (`0x16`). It does not accept
+  SOCKS4.
 - SSH upstream mode accepts server host keys directly and does not read or
   write `known_hosts`.
 - fakehttp mode uses an HTTP/1.1-looking handshake followed by a proxlet-specific
