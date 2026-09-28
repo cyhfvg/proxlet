@@ -1,8 +1,5 @@
 //! HTTP forward proxy listener implementation.
-//!
-//! This module parses HTTP proxy requests, performs optional Basic
-//! authentication, rejects non-CONNECT `https://` absolute-form, rewrites
-//! `http://` absolute-form requests to origin-form, and relays CONNECT tunnels.
+//! Parses requests, rejects CR/LF/NUL headers, rewrites absolute-form, and relays CONNECT.
 
 mod chain;
 mod forward;
@@ -77,6 +74,11 @@ pub async fn serve(
             return Ok(());
         }
     };
+    if chain::request_has_control_header(&request.headers) {
+        crate::access::record(peer, protocol, None, "bad-request");
+        camouflage::write_proxy_status(&mut client, "400 Bad Request").await?;
+        return Ok(());
+    }
     // nmap GetRequest/HTTPOptions use origin-form paths such as `GET /`.
     // Answer those as a normal web server instead of leaking proxy errors.
     if !request.is_proxy_request() {

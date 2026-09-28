@@ -68,7 +68,8 @@ proxlet --type fakehttp
 可选类型包括 `http`、`https`、`socks5`、`socks5h`、`mixed` 和 `fakehttp`，
 默认值为 `http`。`socks5` 和 `socks5h` 监听端行为相同。远程 DNS 只由上游 URL 决定，不由 `--type` 决定。`--lhost` 只绑定解析出的第一个地址，其余地址会打印但不会绑定。IPv6 authority 必须加方括号；未加括号时直接拒绝，不会套默认端口。
 
-HTTP 正向代理请求转发一次后关闭连接. path 和 query 原样转发. `Host` 改成目标 authority, hop-by-hop
+HTTP 正向代理请求转发一次后关闭连接. path 和 query 原样转发. 头名或头值含 CR, LF, NUL 时返回 400 并关闭, 不会改写后转发.
+`Host` 改成目标 authority, hop-by-hop
 头不转发. `CONNECT` 隧道不变. 目标 host 含控制字符时会被拒绝, 不会拼进上游 `CONNECT` 请求. 非 `CONNECT` 的 `https://` absolute-form 在拨号前返回 400, 不会向 443 写明文 HTTP. 代理请求的目标不可用时也返回 400. 上游连接失败返回 `502 Bad Gateway`. origin-form 探测仍返回通用 404. 代理请求认证失败返回带 `Proxy-Authenticate` 的 `407`; nmap 会把这个响应识别成 `http-proxy`.
 
 ### 为 HTTPS 模式创建证书文件

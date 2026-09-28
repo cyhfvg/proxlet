@@ -74,7 +74,9 @@ first resolved address and prints any unused results. An IPv6 authority must
 be bracketed; an unbracketed address is rejected instead of using the default
 port.
 HTTP forward-proxy requests are forwarded once and then closed. Path and query
-are copied unchanged. `Host` is rewritten to the target authority and hop-by-hop
+are copied unchanged. A header name or value containing CR, LF, or NUL is
+rejected with 400 and the connection is closed. It is not rewritten or
+forwarded. `Host` is rewritten to the target authority and hop-by-hop
 headers are not forwarded. `CONNECT` tunnels are unchanged. A target host
 containing a control character is rejected and is not spliced into an upstream
 `CONNECT` request. A non-CONNECT `https://` absolute-form request is rejected

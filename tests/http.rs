@@ -194,6 +194,51 @@ async fn http_upstream_receives_absolute_form_without_connect() {
 }
 
 #[tokio::test]
+async fn control_character_headers_are_rejected_and_not_forwarded() {
+    for header in [
+        "Host: example.com\nX-Evil: 1",
+        "Host: example.com\rX-Evil: 1",
+        "X-Evil\0: 1",
+    ] {
+        let origin = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
+        let origin_addr = origin.local_addr().expect("origin address");
+        let (mut caller, proxy_client) = tokio::io::duplex(4096);
+        let connector = Arc::new(Connector::new(None, None).expect("connector"));
+        let proxy_task = tokio::spawn(async move {
+            proxlet::http::serve(
+                Box::new(proxy_client),
+                &[],
+                connector,
+                None,
+                std::net::Ipv4Addr::LOCALHOST.into(),
+                "http",
+            )
+            .await
+        });
+        caller
+            .write_all(
+                format!("GET http://{origin_addr}/secret HTTP/1.1\r\n{header}\r\n\r\n").as_bytes(),
+            )
+            .await
+            .expect("proxy request");
+        caller.shutdown().await.expect("request shutdown");
+        let mut response = Vec::new();
+        caller
+            .read_to_end(&mut response)
+            .await
+            .expect("proxy response");
+        proxy_task.await.expect("proxy task").expect("proxy result");
+        assert!(
+            response.starts_with(b"HTTP/1.1 400 Bad Request\r\n"),
+            "{header:?} {response:?}"
+        );
+        let accepted =
+            tokio::time::timeout(std::time::Duration::from_millis(50), origin.accept()).await;
+        assert!(accepted.is_err(), "{header:?} was forwarded");
+    }
+}
+
+#[tokio::test]
 async fn origin_form_scanner_probe_receives_nginx_not_found() {
     let (mut caller, proxy_client) = tokio::io::duplex(4096);
     let connector = Arc::new(Connector::new(None, None).expect("connector"));

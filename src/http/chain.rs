@@ -147,3 +147,28 @@ fn has_control_char(value: &str) -> bool {
         .bytes()
         .any(|byte| byte == b'\r' || byte == b'\n' || byte == 0)
 }
+
+/// Report whether a request header name or value contains CR, LF, or NUL.
+///
+/// # Parameters
+///
+/// * `headers` - Parsed header pairs.
+///
+/// # Returns
+///
+/// Returns `true` when a name or value must be rejected instead of forwarded.
+///
+/// # Errors
+///
+/// This function does not return errors.
+///
+/// # Examples
+///
+/// ```text
+/// request_has_control_header(&[("Host".to_owned(), "example.com\nX-Evil: 1".to_owned())])
+/// ```
+pub(super) fn request_has_control_header(headers: &[(String, String)]) -> bool {
+    headers
+        .iter()
+        .any(|(name, value)| has_control_char(name) || has_control_char(value))
+}
