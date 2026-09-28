@@ -51,11 +51,20 @@ pub(super) fn background_args(cli: &Cli) -> Vec<OsString> {
     if let Some(password) = &cli.password {
         push_arg(&mut args, "--auth", password);
     }
+    if let Some(path) = &cli.auth_file {
+        push_arg(&mut args, "--auth-file", path);
+    }
     if let Some(proxy) = &cli.proxy {
         push_arg(&mut args, "--proxy", proxy.as_str());
     }
     if let Some(secret) = &cli.aes_secret {
         push_arg(&mut args, "--aes-secret", secret);
+    }
+    if let Some(path) = &cli.aes_secret_file {
+        push_arg(&mut args, "--aes-secret-file", path);
+    }
+    if let Some(path) = &cli.proxy_file {
+        push_arg(&mut args, "--proxy-file", path);
     }
     for (flag, path) in [
         ("--proxy-ca", &cli.proxy_ca),
@@ -187,5 +196,37 @@ mod tests {
         let child = Cli::try_parse_from(child_argv).expect("rebuilt arguments");
         assert!(!child.daemon);
         assert_eq!(child.lhost, "0.0.0.0");
+    }
+
+    #[test]
+    fn child_arguments_keep_secret_file_paths() {
+        let cli = Cli::try_parse_from([
+            "proxlet",
+            "--daemon",
+            "--user",
+            "alice",
+            "--auth-file",
+            "proxlet.auth",
+            "--aes-secret-file",
+            "proxlet.aes",
+            "--proxy-file",
+            "proxlet.proxy",
+        ])
+        .expect("file sources");
+        let rendered = background_args(&cli)
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(
+            rendered
+                .windows(2)
+                .any(|pair| { pair[0] == "--auth-file" && pair[1] == "proxlet.auth" })
+        );
+        assert!(
+            !rendered
+                .iter()
+                .any(|arg| arg == "--auth" || arg == "--aes-secret")
+        );
+        assert!(rendered.iter().any(|arg| arg == "--proxy-file"));
     }
 }

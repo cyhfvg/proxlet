@@ -36,6 +36,11 @@ use crate::{fakehttp, http, socks};
 /// TLS loading, listen binding, local address lookup, daemon readiness
 /// reporting, or a closed listening socket fails the accept loop.
 pub async fn run(cli: Cli) -> Result<()> {
+    for flag in cli.visible_secret_flags() {
+        log_line(format!(
+            "proxlet: {flag} remains visible in process arguments; prefer a mode 0600 file"
+        ));
+    }
     let config = Arc::new(cli.into_config().await?);
     let connector = Arc::new(
         Connector::with_fakehttp_max_frame_size(

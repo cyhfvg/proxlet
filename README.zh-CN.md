@@ -145,11 +145,15 @@ proxlet --proxy 'https://relay:strong-password@192.0.2.10:1080' \
 
 ### 限制访问
 
-同时指定用户名与密码即可启用认证。只给其中一个会启动失败，并写明缺的是哪一个。启动日志会打印 `authentication enabled` 或 `authentication disabled`：
+同时指定用户名和一个密码来源即可启用认证。只给用户名，或只给密码来源，会启动失败。`--auth` 仍可用，但密码会出现在进程参数里，启动时会警告这一点。优先使用 mode 0600 的文件或 `PROXLET_AUTH`：
 
 ```bash
-proxlet --type mixed --user alice --auth 'strong-password'
+install -m 600 /dev/null proxlet.auth
+printf '%s\n' 'strong-password' > proxlet.auth
+proxlet --type mixed --user alice --auth-file proxlet.auth
 ```
+
+fakehttp 的 secret 同样可用 `--aes-secret-file` 或 `PROXLET_AES_SECRET`。上游 URL 若含密码，使用 `--proxy-file` 或 `PROXLET_PROXY`，避免进入进程参数。Unix 上该文件不能被同组或其他用户读取。非 Unix 构建不检查 ACL。
 
 允许指定的客户端地址或网段：
 
@@ -182,17 +186,14 @@ access <UTC 时间> <客户端 IP> <协议> <目标> <结果>
 proxlet --daemon --type mixed --lport 1080 --log-file proxlet.log --pid-file proxlet.pid
 ```
 
-在 Linux 上，使用启动时显示的 PID 查询进程：
+在 Linux 上查询进程时不要打印参数：
 
 ```bash
-ps -p <PID> -f
+ps -p <PID> -o pid,user,lstart
+ss -ltnp 'sport = :1080'
 ```
 
-若已没有保存 PID，可按命令行查找运行中的实例：
-
-```bash
-pgrep -af proxlet
-```
+不要使用 `ps -f` 或 `pgrep -af`。它们会打印进程参数，包括通过 `--auth`、`--aes-secret` 或 `--proxy` 传入的密码。
 
 在 Linux 上关闭实例：
 
@@ -244,14 +245,17 @@ Stop-Process -Id <PID> -Force
 | `--allow-ip <allow-src-ip>...` | 允许访问的客户端 IP 地址或 CIDR 网段 |
 | `-l, --lhost <lhost>` | 监听主机，默认值：`127.0.0.1` |
 | `-p, --lport <lport>` | 监听端口，默认值：`1080` |
-| `-u, --user <username>` | 认证用户名。必须同时提供 `--auth` |
-| `-a, --auth <password>` | 认证密码。必须同时提供 `--user` |
+| `-u, --user <username>` | 认证用户名。必须同时提供 `--auth`、`--auth-file` 或 `PROXLET_AUTH` |
+| `-a, --auth <password>` | 认证密码。必须同时提供 `--user`。会出现在进程参数里，优先使用 `--auth-file` |
+| `--auth-file <FILE>` | 密码文件，mode 0600。必须同时提供 `--user`。与 `--auth` 和 `PROXLET_AUTH` 互斥 |
 | `-t, --type <type>` | 代理类型，默认值：`http` |
-| `--proxy <SCHEMA_URL>` | 上游代理 URL |
+| `--proxy <SCHEMA_URL>` | 上游代理 URL。URL 含 secret 时优先使用 `--proxy-file` |
+| `--proxy-file <FILE>` | 上游代理 URL 文件，mode 0600。与 `--proxy` 和 `PROXLET_PROXY` 互斥 |
 | `--connect-timeout <SECS>` | DNS、TCP 拨号和握手超时, 单位秒, 必须大于 0, 默认值: `10`. 已建立的隧道不会因此空闲断开 |
-| `--aes-secret <SECRET>` | fakehttp 监听模式使用的 AES 加密 secret |
+| `--aes-secret <SECRET>` | fakehttp 监听模式使用的 AES 加密 secret。会出现在进程参数里，优先使用 `--aes-secret-file` |
+| `--aes-secret-file <FILE>` | AES secret 文件，mode 0600。与 `--aes-secret` 和 `PROXLET_AES_SECRET` 互斥 |
 | `--max-frame-size <KB>` | fakehttp 加密帧 payload 大小，单位 KiB，可选 `8`、`16`、`32`、`64`，默认值：`16` |
-| `--proxy-ca <FILE>` | 用于验证 HTTPS 上游代理的 CA 证书包 |
+| `--proxy-ca <FILE>` | 用于验证 HTTPS 上游代理的 CA 证书包。要求 `--proxy`、`--proxy-file` 或 `PROXLET_PROXY` |
 | `--tls-cert <FILE>` | HTTPS 模式使用的证书文件 |
 | `--tls-key <FILE>` | HTTPS 模式使用的私钥文件 |
 

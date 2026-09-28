@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use ipnet::IpNet;
 use url::Url;
@@ -41,22 +41,27 @@ pub struct Cli {
     #[arg(short = 'p', long = "lport", default_value_t = 1080)]
     pub lport: u16,
 
-    /// Password. Requires --user; providing only one of them is an error.
+    /// Password. Requires --user. Mutually exclusive with --auth-file and PROXLET_AUTH.
     #[arg(
         short = 'a',
         long = "auth",
         value_name = "password",
-        requires = "username"
+        requires = "username",
+        conflicts_with = "auth_file"
     )]
     pub password: Option<String>,
 
-    /// Username. Requires --auth; providing only one of them is an error.
+    /// Password file, mode 0600. Requires --user. Mutually exclusive with --auth and PROXLET_AUTH.
     #[arg(
-        short = 'u',
-        long = "user",
-        value_name = "username",
-        requires = "password"
+        long = "auth-file",
+        value_name = "FILE",
+        requires = "username",
+        conflicts_with = "password"
     )]
+    pub auth_file: Option<PathBuf>,
+
+    /// Username. Requires --auth, --auth-file, or PROXLET_AUTH.
+    #[arg(short = 'u', long = "user", value_name = "username")]
     pub username: Option<String>,
 
     /// Proxy protocol accepted by the listening socket.
@@ -67,13 +72,26 @@ pub struct Cli {
     #[arg(
         long,
         value_name = "SCHEMA_URL",
-        help = "Chain traffic through an upstream proxy URL. Examples: http://user:pass@host:8080, https://user:pass@host:8443, socks5://user:pass@host:1080, fakehttp://secret@host:8080, ssh://user:pass@host:22, ssh://user@host:22?key=/path/to/id_rsa"
+        conflicts_with = "proxy_file",
+        help = "Chain traffic through an upstream proxy URL. Examples: http://user:pass@host:8080, https://user:pass@host:8443, socks5://user:pass@host:1080, fakehttp://secret@host:8080, ssh://user:pass@host:22, ssh://user@host:22?key=/path/to/id_rsa. Prefer --proxy-file when the URL contains a secret."
     )]
     pub proxy: Option<Url>,
 
+    /// Upstream proxy URL file, mode 0600. Mutually exclusive with --proxy and PROXLET_PROXY.
+    #[arg(long = "proxy-file", value_name = "FILE", conflicts_with = "proxy")]
+    pub proxy_file: Option<PathBuf>,
+
     /// AES secret for fakehttp listener encryption.
-    #[arg(long, value_name = "SECRET")]
+    #[arg(long, value_name = "SECRET", conflicts_with = "aes_secret_file")]
     pub aes_secret: Option<String>,
+
+    /// AES secret file, mode 0600. Mutually exclusive with --aes-secret and PROXLET_AES_SECRET.
+    #[arg(
+        long = "aes-secret-file",
+        value_name = "FILE",
+        conflicts_with = "aes_secret"
+    )]
+    pub aes_secret_file: Option<PathBuf>,
 
     /// Maximum fakehttp encrypted frame payload size in KiB. Allowed values: 8, 16, 32, 64.
     #[arg(
@@ -94,7 +112,7 @@ pub struct Cli {
     pub connect_timeout: u64,
 
     /// PEM CA certificate bundle used to verify an HTTPS upstream proxy.
-    #[arg(long, value_name = "FILE", requires = "proxy")]
+    #[arg(long, value_name = "FILE")]
     pub proxy_ca: Option<PathBuf>,
 
     /// PEM certificate chain for HTTPS listener mode.
@@ -318,14 +336,19 @@ impl Cli {
     ///
     /// # Errors
     ///
-    /// Returns an error when only one of --user and --auth is set, HTTPS
-    /// listener TLS files are incomplete, the listen host cannot be resolved,
-    /// or address resolution fails.
+    /// Returns an error when only one of --user and a password source is set,
+    /// secret sources conflict, a secret file is unsafe, HTTPS listener TLS
+    /// files are incomplete, the listen host cannot be resolved, or address
+    /// resolution fails.
     pub async fn into_config(self) -> Result<Config> {
         if self.proxy_type == ProxyType::Https && self.tls_cert.is_none() {
             bail!("--type https requires --tls-cert and --tls-key")
         }
-        let auth = match (self.username, self.password) {
+        self.require_upstream_for_ca()?;
+        let password = self.resolved_password()?;
+        let aes_secret = self.resolved_aes_secret()?;
+        let upstream = self.resolved_upstream()?;
+        let auth = match (self.username, password) {
             (Some(username), Some(password)) => Some(Auth { username, password }),
             (None, None) => None,
             (Some(_), None) => bail!("--user requires --auth"),
@@ -340,8 +363,8 @@ impl Cli {
             allowed_ips: self.allow_ip,
             auth,
             proxy_type: self.proxy_type,
-            upstream: self.proxy,
-            aes_secret: self.aes_secret,
+            upstream,
+            aes_secret,
             max_frame_size: self.max_frame_size * 1024,
             upstream_ca: self.proxy_ca,
             tls_cert: self.tls_cert,
@@ -349,4 +372,228 @@ impl Cli {
             connect_timeout: Duration::from_secs(self.connect_timeout),
         })
     }
+
+    /// Resolve the listener password from the flag, file, or environment.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Parsed command-line options.
+    ///
+    /// # Returns
+    ///
+    /// Returns the password, or `None` when authentication is not configured.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when more than one password source is set or the file
+    /// is unsafe.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let password = cli.resolved_password()?;
+    /// ```
+    pub(crate) fn resolved_password(&self) -> Result<Option<String>> {
+        crate::secret::resolve(
+            self.password.clone(),
+            self.auth_file.as_deref(),
+            "--auth",
+            "--auth-file",
+            "PROXLET_AUTH",
+        )
+    }
+
+    /// Resolve the fakehttp AES secret from the flag, file, or environment.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Parsed command-line options.
+    ///
+    /// # Returns
+    ///
+    /// Returns the secret, or `None` when fakehttp encryption is not configured.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when more than one secret source is set or the file is
+    /// unsafe.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let secret = cli.resolved_aes_secret()?;
+    /// ```
+    pub(crate) fn resolved_aes_secret(&self) -> Result<Option<String>> {
+        crate::secret::resolve(
+            self.aes_secret.clone(),
+            self.aes_secret_file.as_deref(),
+            "--aes-secret",
+            "--aes-secret-file",
+            "PROXLET_AES_SECRET",
+        )
+    }
+
+    /// Resolve the upstream URL from the flag, file, or environment.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Parsed command-line options.
+    ///
+    /// # Returns
+    ///
+    /// Returns the upstream URL, or `None` when traffic is direct.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when more than one proxy source is set, the file is
+    /// unsafe, or the URL cannot be parsed. The URL text is not included.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let upstream = cli.resolved_upstream()?;
+    /// ```
+    pub(crate) fn resolved_upstream(&self) -> Result<Option<Url>> {
+        let from_file = self
+            .proxy_file
+            .as_deref()
+            .map(crate::secret::read_owner_file)
+            .transpose()?;
+        let from_env = crate::secret::env_value("PROXLET_PROXY")?;
+        let text = match (&self.proxy, from_file, from_env) {
+            (Some(url), None, None) => return Ok(Some(url.clone())),
+            (None, Some(text), None) | (None, None, Some(text)) => text,
+            (None, None, None) => return Ok(None),
+            (flag, file, env) => {
+                let mut sources = Vec::new();
+                if flag.is_some() {
+                    sources.push("--proxy");
+                }
+                if file.is_some() {
+                    sources.push("--proxy-file");
+                }
+                if env.is_some() {
+                    sources.push("PROXLET_PROXY");
+                }
+                bail!("{} are mutually exclusive", sources.join(" and "))
+            }
+        };
+        Url::parse(&text)
+            .map(Some)
+            .context("invalid upstream proxy URL")
+    }
+
+    /// Fail before spawn when a secret file or environment source is unsafe.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Parsed command-line options.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` when every configured secret source can be read.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error from password, AES secret, or upstream resolution.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// cli.check_secret_sources()?;
+    /// ```
+    pub(crate) fn check_secret_sources(&self) -> Result<()> {
+        self.require_upstream_for_ca()?;
+        let _ = self.resolved_password()?;
+        let _ = self.resolved_aes_secret()?;
+        let _ = self.resolved_upstream()?;
+        Ok(())
+    }
+
+    /// Reject a CA bundle that has no upstream proxy source.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Parsed command-line options.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` when `--proxy-ca` is absent or an upstream source is set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `--proxy-ca` is set without `--proxy`,
+    /// `--proxy-file`, or `PROXLET_PROXY`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// cli.require_upstream_for_ca()?;
+    /// ```
+    fn require_upstream_for_ca(&self) -> Result<()> {
+        if self.proxy_ca.is_none()
+            || self.proxy.is_some()
+            || self.proxy_file.is_some()
+            || crate::secret::env_value("PROXLET_PROXY")?.is_some()
+        {
+            return Ok(());
+        }
+        bail!("--proxy-ca requires --proxy")
+    }
+
+    /// Names of flags whose values are still visible in process arguments.
+    ///
+    /// # Parameters
+    ///
+    /// * `self` - Parsed command-line options.
+    ///
+    /// # Returns
+    ///
+    /// Returns flag names that put a secret on the command line.
+    ///
+    /// # Errors
+    ///
+    /// This function does not return errors.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let flags = cli.visible_secret_flags();
+    /// ```
+    pub(crate) fn visible_secret_flags(&self) -> Vec<&'static str> {
+        let mut flags = Vec::new();
+        if self.password.is_some() {
+            flags.push("--auth");
+        }
+        if self.aes_secret.is_some() {
+            flags.push("--aes-secret");
+        }
+        if self.proxy.as_ref().is_some_and(url_has_userinfo) {
+            flags.push("--proxy");
+        }
+        flags
+    }
+}
+
+/// Report whether a URL carries userinfo that would be visible in argv.
+///
+/// # Parameters
+///
+/// * `url` - Upstream URL.
+///
+/// # Returns
+///
+/// Returns true when the URL has a username or password.
+///
+/// # Errors
+///
+/// This function does not return errors.
+///
+/// # Examples
+///
+/// ```ignore
+/// let leaks = url_has_userinfo(&url);
+/// ```
+fn url_has_userinfo(url: &Url) -> bool {
+    !url.username().is_empty() || url.password().is_some()
 }

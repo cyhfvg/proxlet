@@ -11,6 +11,7 @@ pub mod camouflage;
 
 /// Command-line parsing and runtime configuration.
 pub mod cli;
+mod secret;
 
 /// Access log lines written to stdout.
 pub mod access;

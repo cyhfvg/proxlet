@@ -52,6 +52,7 @@ static CHILD_REPORTED: AtomicBool = AtomicBool::new(false);
 /// daemon::spawn(&cli)?;
 /// ```
 pub fn spawn(cli: &Cli) -> Result<()> {
+    crate::secret::warn_argv_secrets(&cli.visible_secret_flags());
     validate(cli)?;
     let mut command = Command::new(current_executable()?);
     command
@@ -184,8 +185,10 @@ fn validate(cli: &Cli) -> Result<()> {
     if let Some(path) = &cli.pid_file {
         ensure_parent_dir(path)?;
     }
+    cli.check_secret_sources()?;
+    let upstream = cli.resolved_upstream()?;
     Connector::with_fakehttp_max_frame_size(
-        cli.proxy.clone(),
+        upstream,
         cli.proxy_ca.as_deref(),
         cli.max_frame_size * 1024,
     )?;

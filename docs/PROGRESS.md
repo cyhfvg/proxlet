@@ -82,6 +82,10 @@ Last updated: 2026-09-28
   `--tls-key` are supplied; otherwise HTTP and SOCKS5 remain available.
 - Providing only `--user` or only `--auth` is a startup error that names the
   missing flag. Startup logs `authentication enabled` or `authentication disabled`.
+- `--auth`, `--aes-secret`, and an upstream URL can be read from mode 0600
+  files (`--auth-file`, `--aes-secret-file`, `--proxy-file`) or from
+  `PROXLET_AUTH`, `PROXLET_AES_SECRET`, and `PROXLET_PROXY`. A flag that still
+  puts a secret in process arguments warns at startup and does not print it.
 - SSH upstream mode accepts server host keys directly and does not read or
   write `known_hosts`.
 - fakehttp mode uses an HTTP/1.1-looking handshake followed by a proxlet-specific

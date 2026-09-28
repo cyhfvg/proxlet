@@ -104,17 +104,31 @@ fn proxy_help_includes_uri_examples() {
 
 #[test]
 fn half_auth_flags_are_rejected() {
-    let user_only = Cli::try_parse_from(["proxlet", "--user", "alice"]).expect_err("user only");
+    let user_only =
+        Cli::try_parse_from(["proxlet", "--user", "alice"]).expect("user may use a file");
+    assert!(user_only.password.is_none());
+    assert!(user_only.auth_file.is_none());
+
     let auth_only = Cli::try_parse_from(["proxlet", "--auth", "secret"]).expect_err("auth only");
-    let user_err = user_only.to_string();
     let auth_err = auth_only.to_string();
-    assert!(
-        user_err.contains("--auth"),
-        "missing password flag not named: {user_err}"
-    );
     assert!(
         auth_err.contains("--user"),
         "missing username flag not named: {auth_err}"
+    );
+    let conflict = Cli::try_parse_from([
+        "proxlet",
+        "--user",
+        "alice",
+        "--auth",
+        "secret",
+        "--auth-file",
+        "proxlet.auth",
+    ])
+    .expect_err("flag and file");
+    let conflict_err = conflict.to_string();
+    assert!(
+        conflict_err.contains("--auth"),
+        "conflicting password source not named: {conflict_err}"
     );
 }
 
