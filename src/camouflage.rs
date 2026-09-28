@@ -2,9 +2,10 @@
 //!
 //! nmap version detection classifies `407` and `502` replies as `http-proxy`.
 //! Origin-form scanner probes such as `GET /` are answered with a generic nginx
-//! 404 page so the listener looks like a normal HTTP server.
+//! 404 page. A request already identified as a proxy request gets a standard
+//! status instead, including `502 Bad Gateway` for an upstream failure.
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use tokio::io::AsyncWriteExt;
 
 use crate::connector::BoxStream;
@@ -114,6 +115,59 @@ pub async fn write_service_unavailable(stream: &mut BoxStream) -> Result<()> {
     Ok(())
 }
 
+/// Write a standard proxy failure status and close the conversation.
+///
+/// # Parameters
+///
+/// * `stream` - Client stream for a request already identified as a proxy request.
+/// * `status` - Reason phrase status such as `502 Bad Gateway`. It must not
+///   contain CR, LF, or NUL.
+///
+/// # Returns
+///
+/// Returns `Ok(())` after the response is written.
+///
+/// # Errors
+///
+/// Returns an error when `status` contains a control character or writing fails.
+///
+/// # Examples
+///
+/// ```text
+/// write_proxy_status(&mut client, "502 Bad Gateway").await?;
+/// write_proxy_status(&mut client, "400 Bad Request").await?;
+/// ```
+pub async fn write_proxy_status(stream: &mut BoxStream, status: &str) -> Result<()> {
+    stream.write_all(&proxy_status_response(status)?).await?;
+    Ok(())
+}
+
+/// Build a closed proxy failure response without a camouflage body.
+///
+/// # Parameters
+///
+/// * `status` - Status text after `HTTP/1.1`.
+///
+/// # Returns
+///
+/// Returns the complete response bytes.
+///
+/// # Errors
+///
+/// Returns an error when `status` contains CR, LF, or NUL.
+///
+/// # Examples
+///
+/// ```text
+/// proxy_status_response("502 Bad Gateway")
+/// ```
+fn proxy_status_response(status: &str) -> Result<Vec<u8>> {
+    if status.bytes().any(|byte| matches!(byte, b'\r' | b'\n' | 0)) {
+        bail!("proxy status contains a control character");
+    }
+    Ok(format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").into_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,5 +187,16 @@ mod tests {
         assert!(not_found.contains(&format!("Content-Length: {}\r\n", NOT_FOUND_BODY.len())));
         assert!(unavailable.starts_with("HTTP/1.1 503 Service Temporarily Unavailable\r\n"));
         assert!(!unavailable.contains("502"));
+    }
+
+    #[test]
+    fn proxy_failure_status_is_not_camouflaged() {
+        let response = proxy_status_response("502 Bad Gateway").expect("status");
+        let text = String::from_utf8(response).expect("UTF-8");
+        assert_eq!(
+            text,
+            "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        assert!(proxy_status_response("502\r\nX-Extra: 1").is_err());
     }
 }

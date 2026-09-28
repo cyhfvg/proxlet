@@ -4,19 +4,19 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context as _, Result, bail};
-use base64::Engine;
+use anyhow::{bail, Context as _, Result};
 use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use proxlet::{Cli, ProxyType};
-use russh::keys::{Algorithm, PrivateKey, PublicKey, ssh_key};
+use russh::keys::{ssh_key, Algorithm, PrivateKey, PublicKey};
 use russh::server::{Auth, Handler, Msg, Server, Session};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
-use tokio_rustls::TlsConnector;
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
+use tokio_rustls::TlsConnector;
 use url::Url;
 
 const USER: &str = "proxlet-user";
@@ -71,7 +71,7 @@ async fn http_upstream_authentication_failure_returns_bad_gateway() -> Result<()
 
     let response = proxy_get_plain(proxlet.addr, "localhost", 1).await?;
 
-    assert!(response.starts_with(b"HTTP/1.1 503 Service Temporarily Unavailable\r\n"));
+    assert!(response.starts_with(b"HTTP/1.1 502 Bad Gateway\r\n"));
     upstream.task.await??;
     Ok(())
 }
@@ -132,7 +132,7 @@ async fn socks5h_upstream_authentication_failure_returns_bad_gateway() -> Result
 
     let response = proxy_get_plain(proxlet.addr, "localhost", 1).await?;
 
-    assert!(response.starts_with(b"HTTP/1.1 503 Service Temporarily Unavailable\r\n"));
+    assert!(response.starts_with(b"HTTP/1.1 502 Bad Gateway\r\n"));
     upstream.task.await??;
     Ok(())
 }
@@ -167,7 +167,7 @@ async fn ssh_upstream_authentication_failure_returns_bad_gateway() -> Result<()>
 
     let response = proxy_get_plain(proxlet.addr, "localhost", 1).await?;
 
-    assert!(response.starts_with(b"HTTP/1.1 503 Service Temporarily Unavailable\r\n"));
+    assert!(response.starts_with(b"HTTP/1.1 502 Bad Gateway\r\n"));
     Ok(())
 }
 
@@ -238,7 +238,7 @@ async fn ssh_upstream_private_key_authentication_failure_returns_bad_gateway() -
 
     let response = proxy_get_plain(proxlet.addr, "localhost", 1).await?;
 
-    assert!(response.starts_with(b"HTTP/1.1 503 Service Temporarily Unavailable\r\n"));
+    assert!(response.starts_with(b"HTTP/1.1 502 Bad Gateway\r\n"));
     Ok(())
 }
 

@@ -129,6 +129,7 @@ Last updated: 2026-09-28
 - `--allow-ip` compares an IPv4-mapped IPv6 client address as its IPv4 form.
 - `--lhost` binds the first resolved address and warns about the rest. A `socks5` upstream tries each locally resolved address after a rejected CONNECT.
 - HTTP `Basic` scheme matching is ASCII case-insensitive. Listener username and password comparisons do not stop at the first mismatched byte.
+- Proxy requests return `400` for an unusable target and `502 Bad Gateway` for an upstream failure. Origin-form probes still get a camouflage 404. A proxy authentication failure still returns `407`.
 - SSH upstream mode accepts server host keys directly and does not read or
   write `known_hosts`.
 - fakehttp mode uses an HTTP/1.1-looking handshake followed by a proxlet-specific

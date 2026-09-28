@@ -73,12 +73,15 @@ same. Remote DNS follows the upstream URL, not `--type`. `--lhost` binds the
 first resolved address and prints any unused results. An IPv6 authority must
 be bracketed; an unbracketed address is rejected instead of using the default
 port.
-
 HTTP forward-proxy requests are forwarded once and then closed. `Host` is
 rewritten to the target authority and hop-by-hop headers are not forwarded.
 `CONNECT` tunnels are unchanged. A target host containing a control character
 is rejected and is not spliced into an upstream `CONNECT` request. A non-CONNECT
 `https://` absolute-form request is rejected with HTTP 400 before dialing.
+A proxy request with an unusable target also returns 400. Upstream connection
+failure returns `502 Bad Gateway`. Origin-form probes still get a generic 404.
+Authentication failure on a proxy request returns `407` with
+`Proxy-Authenticate`; nmap classifies that reply as `http-proxy`.
 
 ### Create certificate files for HTTPS mode
 

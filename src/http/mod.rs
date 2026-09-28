@@ -114,11 +114,11 @@ pub async fn serve(
         .await?;
         bail!("https absolute-form requires CONNECT");
     }
-
     let target = match request.target() {
         Ok(target) => target,
         Err(error) => {
             crate::access::record(peer, protocol, None, "bad-request");
+            let _ = camouflage::write_proxy_status(&mut client, "400 Bad Request").await;
             return Err(error);
         }
     };
@@ -126,7 +126,7 @@ pub async fn serve(
     let mut remote = match connector.connect(&target).await {
         Ok(remote) => remote,
         Err(error) => {
-            camouflage::write_service_unavailable(&mut client).await?;
+            camouflage::write_proxy_status(&mut client, "502 Bad Gateway").await?;
             crate::access::record(peer, protocol, Some(&logged), "error");
             return Err(error);
         }
@@ -152,7 +152,8 @@ pub async fn serve(
     let origin_header = match request.origin_form_header() {
         Ok(header) => header,
         Err(error) => {
-            crate::access::record(peer, protocol, Some(&logged), "error");
+            crate::access::record(peer, protocol, Some(&logged), "bad-request");
+            let _ = camouflage::write_proxy_status(&mut client, "400 Bad Request").await;
             return Err(error);
         }
     };
